@@ -11,15 +11,17 @@
     function signatures reference those types directly.
 
     Write-ToolOutput's "===...===" header-line color defaults to
-    $global:AccentOrange - the Toolkit sets that as a global (not script)
-    variable specifically so it's visible here across the module boundary.
+    $global:ConsoleHeaderColor - the Toolkit sets that as a global (not script)
+    variable specifically so it's visible here across the module boundary. The
+    output console intentionally stays a fixed dark look in both Light and Dark
+    app themes, so this color is a constant, never swapped by Set-AppTheme.
 #>
 
 function Write-ToolOutput {
     param(
         [System.Windows.Forms.RichTextBox]$Box,
         [string]$Text,
-        [System.Drawing.Color]$HeaderColor = $global:AccentOrange
+        [System.Drawing.Color]$HeaderColor = $global:ConsoleHeaderColor
     )
     foreach ($line in ($Text -split "`n")) {
         $Box.SelectionStart = $Box.TextLength

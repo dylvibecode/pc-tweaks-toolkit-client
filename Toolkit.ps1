@@ -238,19 +238,140 @@ function Get-PrimaryGpuVendor {
 
 # ---------- GUI ----------
 
-# Accent palette pulled from the logo (purple -> orange gradient on black),
-# sampled at 4 even points so each check button gets its own shade.
-$global:AccentPurple  = [System.Drawing.Color]::FromArgb(168, 85, 247)
-$global:AccentBlend1  = [System.Drawing.Color]::FromArgb(197, 103, 173)
-$global:AccentBlend2  = [System.Drawing.Color]::FromArgb(226, 122, 100)
-$global:AccentOrange  = [System.Drawing.Color]::FromArgb(255, 140, 26)
+# Theme token tables - two flat hashtables of Color values, one active at a time via
+# $script:Theme. Color is reserved exclusively for the tier system (Adjust/Check/Review
+# First); every other control reads a neutral token so switching modes is one function call
+# (Set-AppTheme) rather than scattered find-and-replace. See PLAN.md "Theme redesign" for
+# the mockup-review history behind these exact values (tier colors were deliberately pushed
+# apart in both hue AND lightness so Adjust vs Review First stays distinguishable even under
+# red-green color blindness, where hue alone collapses).
+$Themes = @{
+    Dark = @{
+        BgWindow        = [System.Drawing.Color]::FromArgb(0x13, 0x14, 0x17)
+        BgSurface       = [System.Drawing.Color]::FromArgb(0x1c, 0x1d, 0x22)
+        BgSurfaceRaised = [System.Drawing.Color]::FromArgb(0x24, 0x26, 0x2b)
+        BorderSubtle    = [System.Drawing.Color]::FromArgb(0x2c, 0x2e, 0x35)
+        TextPrimary     = [System.Drawing.Color]::FromArgb(0xec, 0xee, 0xf2)
+        TextSecondary   = [System.Drawing.Color]::FromArgb(0x92, 0x98, 0xa3)
+        TextTertiary    = [System.Drawing.Color]::FromArgb(0x79, 0x7f, 0x8a)
+        TierAdjust      = [System.Drawing.Color]::FromArgb(0xd9, 0x9a, 0x4e)
+        TierCheck       = [System.Drawing.Color]::FromArgb(0x6f, 0xad, 0xd6)
+        TierReview      = [System.Drawing.Color]::FromArgb(0xe0, 0x60, 0x4a)
+    }
+    Light = @{
+        BgWindow        = [System.Drawing.Color]::FromArgb(0xf5, 0xf5, 0xf6)
+        BgSurface       = [System.Drawing.Color]::FromArgb(0xff, 0xff, 0xff)
+        # BgSurfaceRaised and BorderSubtle are deliberately pushed well past what a calibrated
+        # reference display needs - this app's actual audience skews toward gamers running
+        # digital-vibrance/saturation boosted well above default, which compresses exactly this
+        # kind of subtle near-white tonal gap (confirmed not a bug on a properly calibrated
+        # screen - a real, common part of the user base, not an edge case, so light mode carries
+        # extra separation headroom on purpose). Dark mode doesn't get the same treatment - its
+        # deep blacks and bright accents don't have this risk the same way.
+        BgSurfaceRaised = [System.Drawing.Color]::FromArgb(0xd7, 0xda, 0xe0)
+        BorderSubtle    = [System.Drawing.Color]::FromArgb(0xa8, 0xad, 0xb6)
+        TextPrimary     = [System.Drawing.Color]::FromArgb(0x17, 0x18, 0x1c)
+        TextSecondary   = [System.Drawing.Color]::FromArgb(0x55, 0x58, 0x5f)
+        TextTertiary    = [System.Drawing.Color]::FromArgb(0x7c, 0x7f, 0x87)
+        TierAdjust      = [System.Drawing.Color]::FromArgb(0xa8, 0x64, 0x1c)
+        TierCheck       = [System.Drawing.Color]::FromArgb(0x1f, 0x6f, 0xa0)
+        TierReview      = [System.Drawing.Color]::FromArgb(0xa8, 0x38, 0x24)
+    }
+}
+$script:ThemeModeKey = 'HKCU:\Software\PCTweaksToolkit'
+$savedThemeMode = (Get-ItemProperty -Path $script:ThemeModeKey -Name 'ThemeMode' -ErrorAction SilentlyContinue).ThemeMode
+$script:ThemeMode = if ($savedThemeMode -eq 'Light') { 'Light' } else { 'Dark' }
+$script:Theme = $Themes[$script:ThemeMode]
+
+# Explicit registries of already-built controls that need repainting when Set-AppTheme runs -
+# preferred over recursively walking the control tree (matches this project's existing
+# preference for explicit state over implicit traversal, see the .Tag-over-closures rule
+# elsewhere in this file / CLAUDE.md).
+$script:ThemedTiles = New-Object System.Collections.Generic.List[object]
+$script:ThemedChips = New-Object System.Collections.Generic.List[object]
+$script:ThemedSectionHeaders = New-Object System.Collections.Generic.List[object]
+# Windows Tuning-specific: one entry per section ({ Wrapper, InnerBoard }), populated by
+# New-WinBoardSection. $script:CurrentSectionInnerBoard is where subsequent New-SettingsTile
+# calls land - set each time a new section starts. See New-WinBoardSection/Update-WinBoardReflow
+# for why the Windows board uses this manually-positioned structure instead of a flat
+# FlowLayoutPanel like every other tab (PLAN.md has the full history of what didn't work first).
+$script:WinBoardSections = New-Object System.Collections.Generic.List[object]
+$script:CurrentSectionInnerBoard = $null
+
+# Fixed regardless of theme mode - the output console intentionally always stays dark
+# (common terminal/log-panel convention, confirmed with the user), so its header-line color
+# is a constant, never swapped by Set-AppTheme. Exposed as $global: (not $script:) because
+# ExternalTools.psm1's Write-ToolOutput reads it across the module boundary - a module
+# function can't see this script's $script: scope, same reason the old accent globals were
+# $global: too.
+$global:ConsoleHeaderColor = [System.Drawing.Color]::FromArgb(0xdf, 0xe1, 0xe5)
+
+function Get-RoundedPath {
+    # Standard WinForms rounded-corner technique - GDI+ controls are rectangular by default,
+    # so any rounded look needs an explicit path built from four corner arcs. Shared by every
+    # Paint handler below that fills/strokes a rounded shape.
+    param([int]$Width, [int]$Height, [int]$Radius)
+    $d = $Radius * 2
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $path.AddArc(0, 0, $d, $d, 180, 90)
+    $path.AddArc($Width - $d, 0, $d, $d, 270, 90)
+    $path.AddArc($Width - $d, $Height - $d, $d, $d, 0, 90)
+    $path.AddArc(0, $Height - $d, $d, $d, 90, 90)
+    $path.CloseFigure()
+    return $path
+}
+
+function Add-FlatRoundedPaint {
+    # Shared by every plain flat rounded control that isn't a chip/pill-switch/tile (tabs,
+    # bottom-bar buttons, dialog option buttons, tile Action/Check buttons) - reads BackColor
+    # and FlatAppearance.BorderColor live off the control itself (already kept correct
+    # elsewhere), so only needs -Radius and -ParentColor.
+    #
+    # Deliberately does NOT use Control.Region for the rounded shape - Region is a hard,
+    # always-aliased pixel mask in GDI+ (confirmed via live testing: chips/pill switches already
+    # had SmoothingMode = AntiAlias set in their Paint handlers and still looked jagged, because
+    # the REGION boundary itself was the aliased edge, not the drawing inside it - SmoothingMode
+    # only affects drawing operations, never Region clipping). Instead this erases the control's
+    # full rectangle back to -ParentColor first (covering the square corners a plain BackColor
+    # fill would otherwise leave showing), then fills/strokes the rounded path on top with
+    # anti-aliasing - a real smooth edge, not just a smoothed stroke inside a jagged clip.
+    # -ParentColor travels via Add-Member (not .Tag) since several of these controls already use
+    # .Tag for other bundled state.
+    param([System.Windows.Forms.Control]$Control, [int]$Radius, [scriptblock]$ParentColor)
+    Add-Member -InputObject $Control -NotePropertyName RoundedRadius -NotePropertyValue $Radius -Force
+    Add-Member -InputObject $Control -NotePropertyName RoundedParentColor -NotePropertyValue $ParentColor -Force
+    $Control.Add_Paint({
+        param($ctrl, $e)
+        $g = $e.Graphics
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $eraseBrush = New-Object System.Drawing.SolidBrush((& $ctrl.RoundedParentColor))
+        $g.FillRectangle($eraseBrush, 0, 0, $ctrl.Width, $ctrl.Height)
+        $eraseBrush.Dispose()
+        $path = Get-RoundedPath -Width $ctrl.Width -Height $ctrl.Height -Radius $ctrl.RoundedRadius
+        $fillBrush = New-Object System.Drawing.SolidBrush($ctrl.BackColor)
+        $g.FillPath($fillBrush, $path)
+        $fillBrush.Dispose()
+        if ($ctrl.FlatAppearance.BorderSize -gt 0) {
+            $pen = New-Object System.Drawing.Pen($ctrl.FlatAppearance.BorderColor, 1)
+            $g.DrawPath($pen, $path)
+            $pen.Dispose()
+        }
+        $path.Dispose()
+        # A Button's own default renderer draws its Text BEFORE the Paint event fires - the
+        # erase-and-fill above was painting straight over that already-rendered text (confirmed
+        # live: every tab/chip/button rendered as a blank shape with no visible text). Has to be
+        # drawn again here, on top of the new background, or it never appears at all.
+        $textFlags = [System.Windows.Forms.TextFormatFlags]::HorizontalCenter -bor [System.Windows.Forms.TextFormatFlags]::VerticalCenter
+        [System.Windows.Forms.TextRenderer]::DrawText($g, $ctrl.Text, $ctrl.Font, (New-Object System.Drawing.Rectangle(0, 0, $ctrl.Width, $ctrl.Height)), $ctrl.ForeColor, $textFlags)
+    })
+}
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "PC Tweaks Toolkit"
 $form.Size = New-Object System.Drawing.Size(860, 900)
 $form.StartPosition = "CenterScreen"
-$form.BackColor = [System.Drawing.Color]::FromArgb(8, 8, 10)
-$form.ForeColor = [System.Drawing.Color]::White
+$form.BackColor = $script:Theme.BgWindow
+$form.ForeColor = $script:Theme.TextPrimary
 $form.FormBorderStyle = 'Sizable'
 $form.MaximizeBox = $true
 $form.MinimumSize = New-Object System.Drawing.Size(700, 620)
@@ -275,28 +396,56 @@ if ($logoImg) {
 $headerLabel = New-Object System.Windows.Forms.Label
 $headerLabel.Text = Get-SystemHeaderText
 $headerLabel.AutoSize = $false
-$headerLabel.Size = New-Object System.Drawing.Size(770, 20)
+# Width leaves room for the theme toggle (starts at X=725, see below) regardless of whether
+# $textX is 65 (logo present) or 15 (no logo) - was a fixed 770 before the toggle existed,
+# which overlapped it.
+$headerLabel.Size = New-Object System.Drawing.Size((715 - $textX), 20)
 $headerLabel.Location = New-Object System.Drawing.Point($textX, $headerY)
-$headerLabel.ForeColor = [System.Drawing.Color]::Gray
+$headerLabel.ForeColor = $script:Theme.TextSecondary
 $headerLabel.Font = New-Object System.Drawing.Font("Segoe UI", 8)
 $headerLabel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $form.Controls.Add($headerLabel)
 
-# gradient accent bar echoing the logo's purple -> orange ring
-# (sits below the logo/header row - the logo box is 40px tall starting at
-# $headerY, so this must start at or after $headerY + 40 to avoid drawing over it)
+# Neutral hairline, replacing the old purple -> orange gradient bar - color is reserved for
+# the tier system now, so this is just a flat BorderSubtle-colored rule under the header
+# (sits below the logo/header row - the logo box is 40px tall starting at $headerY, so this
+# must start at or after $headerY + 40 to avoid drawing over it). Reads $script:Theme live at
+# paint time, so Set-AppTheme only needs to call .Invalidate() to repaint it on mode switch.
 $accentBar = New-Object System.Windows.Forms.Panel
-$accentBar.Location = New-Object System.Drawing.Point(15, 58)
-$accentBar.Size = New-Object System.Drawing.Size(830, 4)
+$accentBar.Location = New-Object System.Drawing.Point(15, 59)
+$accentBar.Size = New-Object System.Drawing.Size(830, 1)
 $accentBar.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
 $accentBar.Add_Paint({
     param($barControl, $e)
-    $rect = New-Object System.Drawing.Rectangle(0, 0, $barControl.Width, $barControl.Height)
-    $brush = New-Object System.Drawing.Drawing2D.LinearGradientBrush($rect, $global:AccentPurple, $global:AccentOrange, 0.0)
-    $e.Graphics.FillRectangle($brush, $rect)
+    $brush = New-Object System.Drawing.SolidBrush($script:Theme.BorderSubtle)
+    $e.Graphics.FillRectangle($brush, 0, 0, $barControl.Width, $barControl.Height)
     $brush.Dispose()
 })
 $form.Controls.Add($accentBar)
+
+# App-level Light/Dark toggle (goal: a real UI theme, not just the separate "Windows Dark
+# Mode" feature tile). Reuses the same neutral pill-switch look as toggle tiles - Get-TierColor/
+# Add-PillSwitchPaint/Set-AppTheme are defined further below (before any board/tile
+# construction, same "define before call site" rule as every other helper here), so this
+# control's actual wiring happens right before $splitContainer is built, later in the file,
+# even though it's visually anchored in the header row.
+$themeToggleLabel = New-Object System.Windows.Forms.Label
+$themeToggleLabel.AutoSize = $false
+$themeToggleLabel.Size = New-Object System.Drawing.Size(50, 16)
+$themeToggleLabel.Location = New-Object System.Drawing.Point(725, ($headerY + 2))
+$themeToggleLabel.TextAlign = 'MiddleRight'
+$themeToggleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 7.5, [System.Drawing.FontStyle]::Bold)
+$themeToggleLabel.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+$form.Controls.Add($themeToggleLabel)
+
+$themeToggle = New-Object System.Windows.Forms.Button
+$themeToggle.Size = New-Object System.Drawing.Size(40, 20)
+$themeToggle.Location = New-Object System.Drawing.Point(780, ($headerY + 1))
+$themeToggle.FlatStyle = 'Flat'
+$themeToggle.FlatAppearance.BorderSize = 0
+$themeToggle.Text = ''
+$themeToggle.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Right
+$form.Controls.Add($themeToggle)
 
 # Custom "tab strip" built from two plain buttons instead of a real TabControl -
 # WinForms TabControl headers fight our owner-draw and keep rendering native
@@ -310,6 +459,7 @@ function New-SectionButton {
     $btn.FlatStyle = 'Flat'
     $btn.FlatAppearance.BorderSize = 0
     $btn.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
+    Add-FlatRoundedPaint -Control $btn -Radius 6 -ParentColor { $script:Theme.BgWindow }
     $form.Controls.Add($btn)
     return $btn
 }
@@ -329,43 +479,234 @@ $btnSectionGraphics = New-SectionButton -Text "Graphics" -X 465
 # after every click (never assume the write succeeded) - see PLAN.md for the full tier
 # classification and the "Adjust always means fully reversible" rule that drove it.
 
-function Update-ToggleVisual {
-    param([System.Windows.Forms.Button]$Button)
-    $isOn = & $Button.Tag.GetState
-    if ($isOn) {
-        $Button.Text = $Button.Tag.OnLabel
-        $Button.BackColor = [System.Drawing.Color]::FromArgb(20, 40, 28)
-        $Button.ForeColor = [System.Drawing.Color]::FromArgb(74, 222, 128)
-        $Button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(74, 222, 128)
-    } else {
-        $Button.Text = $Button.Tag.OffLabel
-        $Button.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 34)
-        $Button.ForeColor = [System.Drawing.Color]::FromArgb(148, 143, 163)
-        $Button.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(80, 78, 90)
+function Get-TierColor {
+    # The one place tier -> color is decided, so both tile construction and Set-AppTheme's
+    # repaint sweep derive the exact same value from $script:Theme. Anything that isn't a real
+    # tier (e.g. the "All" filter chip) falls through to a neutral tertiary text color.
+    param([string]$Tier)
+    switch ($Tier) {
+        'Adjust' { return $script:Theme.TierAdjust }
+        'Check'  { return $script:Theme.TierCheck }
+        'Review' { return $script:Theme.TierReview }
+        default  { return $script:Theme.TextTertiary }
     }
 }
 
-function New-SectionHeader {
+function Add-PillSwitchPaint {
+    # Neutral pill switch shared by every toggle-tier tile AND the app's own theme switch -
+    # state reads live from $this.Tag.GetState at paint time, so a plain .Invalidate() after a
+    # state change (or a theme switch) is enough to repaint correctly. No hue anywhere: OFF is
+    # an outlined track with the thumb on the left, ON is a filled track with the thumb on the
+    # right (a light "cutout" thumb against the filled track) - fill and position carry the
+    # state, matching the color-discipline rule the rest of this theme follows.
+    # No Control.Region here - Region is a hard, always-aliased pixel mask (confirmed via live
+    # testing: this already had SmoothingMode = AntiAlias and still looked jagged, because the
+    # Region boundary itself was the aliased edge). Erasing to the button's own BackColor first
+    # (already kept correct for whichever surface this switch sits on - a tile's BgSurface, or
+    # BgWindow for the header toggle) then filling/stroking the path on top gives a real smooth
+    # edge instead of an anti-aliased stroke sitting inside a jagged clip.
+    param([System.Windows.Forms.Button]$Button)
+    $Button.Add_Paint({
+        param($btnControl, $e)
+        $isOn = & $btnControl.Tag.GetState
+        $g = $e.Graphics
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $w = $btnControl.Width; $h = $btnControl.Height
+        $eraseBrush = New-Object System.Drawing.SolidBrush($btnControl.BackColor)
+        $g.FillRectangle($eraseBrush, 0, 0, $w, $h)
+        $eraseBrush.Dispose()
+        $path = Get-RoundedPath -Width $w -Height $h -Radius ([Math]::Floor($h / 2))
+        $thumbSize = $h - 4
+        if ($isOn) {
+            $trackBrush = New-Object System.Drawing.SolidBrush($script:Theme.TextPrimary)
+            $g.FillPath($trackBrush, $path)
+            $trackBrush.Dispose()
+            $thumbBrush = New-Object System.Drawing.SolidBrush($script:Theme.BgWindow)
+            $g.FillEllipse($thumbBrush, ($w - $thumbSize - 2), 2, $thumbSize, $thumbSize)
+            $thumbBrush.Dispose()
+        } else {
+            $pen = New-Object System.Drawing.Pen($script:Theme.BorderSubtle, 1)
+            $g.DrawPath($pen, $path)
+            $pen.Dispose()
+            $thumbBrush = New-Object System.Drawing.SolidBrush($script:Theme.TextTertiary)
+            $g.FillEllipse($thumbBrush, 2, 2, $thumbSize, $thumbSize)
+            $thumbBrush.Dispose()
+        }
+        $path.Dispose()
+    })
+}
+
+function Add-ChipPaint {
+    # Fills and outlines the chip manually along a rounded path, instead of trusting
+    # Control.Region for the shape and FlatAppearance's built-in border renderer for the outline
+    # - neither respects anti-aliasing (Region is a hard pixel mask; the built-in border is
+    # always a plain rectangle, corner-clipped by a Region into flat edges and stray artifacts
+    # rather than following a rounded shape). Chips always sit directly on the chip row's
+    # inherited BgWindow (every tab's board chain has no explicit BackColor of its own), so that
+    # erase color is safe to hardcode here rather than threading it through as a parameter.
+    # Reads BackColor (fill) and FlatAppearance.BorderColor (outline) live off the chip -
+    # Update-ChipVisual already keeps both in sync; BorderSize stays 0 so BorderColor is
+    # otherwise inert, just reused here as where the color lives.
+    param([System.Windows.Forms.Button]$Chip)
+    $Chip.Add_Paint({
+        param($chipControl, $e)
+        $g = $e.Graphics
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $eraseBrush = New-Object System.Drawing.SolidBrush($script:Theme.BgWindow)
+        $g.FillRectangle($eraseBrush, 0, 0, $chipControl.Width, $chipControl.Height)
+        $eraseBrush.Dispose()
+        $path = Get-RoundedPath -Width $chipControl.Width -Height $chipControl.Height -Radius 12
+        $fillBrush = New-Object System.Drawing.SolidBrush($chipControl.BackColor)
+        $g.FillPath($fillBrush, $path)
+        $fillBrush.Dispose()
+        $pen = New-Object System.Drawing.Pen($chipControl.FlatAppearance.BorderColor, 1)
+        $g.DrawPath($pen, $path)
+        $pen.Dispose()
+        $path.Dispose()
+        # Same reason as Add-FlatRoundedPaint - the erase-and-fill above paints over the chip's
+        # own already-rendered text, so it has to be drawn again on top here.
+        $textFlags = [System.Windows.Forms.TextFormatFlags]::HorizontalCenter -bor [System.Windows.Forms.TextFormatFlags]::VerticalCenter
+        [System.Windows.Forms.TextRenderer]::DrawText($g, $chipControl.Text, $chipControl.Font, (New-Object System.Drawing.Rectangle(0, 0, $chipControl.Width, $chipControl.Height)), $chipControl.ForeColor, $textFlags)
+    })
+}
+
+function Add-TilePaint {
+    # Fills the tile's rounded shape manually (see Add-FlatRoundedPaint's comment for why -
+    # Region-based rounding is always jagged, regardless of SmoothingMode). Tiles sit directly in
+    # a tab's FlowLayoutPanel board, whose whole ancestor chain has no explicit BackColor of its
+    # own, so the erase color (BgWindow) is safe to hardcode here.
+    #
+    # Also draws the tier-color top stripe here, clipped to the same rounded path, instead of as
+    # a separate hard-cornered child Panel - a flat rectangular stripe at the very top of the
+    # tile would show square corners poking past the tile's now-properly-rounded top corners,
+    # which is a worse mismatch than the plain jaggedness this whole pass is fixing. Reads the
+    # stripe color from a NoteProperty (StripeColor) rather than a control reference, since there
+    # is no longer a separate Stripe control to point at.
+    param([System.Windows.Forms.Panel]$Tile)
+    $Tile.Add_Paint({
+        param($tileControl, $e)
+        $g = $e.Graphics
+        $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $eraseBrush = New-Object System.Drawing.SolidBrush($script:Theme.BgWindow)
+        $g.FillRectangle($eraseBrush, 0, 0, $tileControl.Width, $tileControl.Height)
+        $eraseBrush.Dispose()
+        $path = Get-RoundedPath -Width $tileControl.Width -Height $tileControl.Height -Radius 10
+        $fillBrush = New-Object System.Drawing.SolidBrush($tileControl.BackColor)
+        $g.FillPath($fillBrush, $path)
+        $fillBrush.Dispose()
+        $oldClip = $g.Clip
+        $g.SetClip($path, [System.Drawing.Drawing2D.CombineMode]::Replace)
+        $stripeBrush = New-Object System.Drawing.SolidBrush($tileControl.StripeColor)
+        $g.FillRectangle($stripeBrush, 0, 0, $tileControl.Width, 3)
+        $stripeBrush.Dispose()
+        $g.Clip = $oldClip
+        # A thin border was in the approved mockup but never made it into this Paint handler -
+        # tiles were relying on fill-color contrast against BgWindow alone, which is subtle
+        # enough in light mode (white tile on very-light-gray page) to read as washed out.
+        $pen = New-Object System.Drawing.Pen($script:Theme.BorderSubtle, 1)
+        $g.DrawPath($pen, $path)
+        $pen.Dispose()
+        $path.Dispose()
+    })
+}
+
+function Update-ChipVisual {
+    # Shared by the click handler (immediate feedback) and Set-AppTheme's repaint sweep (mode
+    # switch) - both just call this rather than duplicating the active/inactive color logic.
+    param([System.Windows.Forms.Button]$Chip)
+    $color = Get-TierColor -Tier $Chip.Tag.Filter
+    if ($Chip.Tag.IsActive) {
+        $Chip.BackColor = $color
+        $Chip.ForeColor = $script:Theme.BgWindow
+    } else {
+        $Chip.BackColor = $script:Theme.BgSurface
+        $Chip.ForeColor = $color
+    }
+    $Chip.FlatAppearance.BorderColor = $color
+}
+
+function Update-ToggleVisual {
+    param([System.Windows.Forms.Button]$Button)
+    $isOn = & $Button.Tag.GetState
+    $Button.Tag.StateLabel.Text = if ($isOn) { $Button.Tag.OnLabel } else { $Button.Tag.OffLabel }
+    $Button.Invalidate()
+}
+
+function New-WinBoardSection {
+    # Starts a new Windows Tuning section: a plain-Panel wrapper (deliberately NOT a
+    # FlowLayoutPanel or AutoSize - see Update-WinBoardReflow's comment for the full history of
+    # why) containing a header Label and this section's own inner tile FlowLayoutPanel, which
+    # wraps tiles exactly like every other tab's board. Adds the wrapper to $script:WinBoard and
+    # points $script:CurrentSectionInnerBoard at the inner board, so callers just do
+    # `New-WinBoardSection "Name"` once per section and then keep adding tiles exactly as before
+    # (just to $script:CurrentSectionInnerBoard instead of $script:WinBoard directly).
     param([string]$Text)
-    $lbl = New-Object System.Windows.Forms.Label
-    $lbl.Text = $Text.ToUpper()
-    $lbl.ForeColor = [System.Drawing.Color]::FromArgb(148, 143, 163)
-    $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
-    $lbl.AutoSize = $false
-    # Deliberately wider than any realistic board width (rather than tracking the board's exact
-    # current size) so FlowBreak reliably forces a full row-break at any window width - a Label's
-    # background is transparent by default, so oversizing the bounding box draws nothing extra.
-    $lbl.Size = New-Object System.Drawing.Size(2000, 20)
-    $lbl.Margin = New-Object System.Windows.Forms.Padding(4, 10, 4, 2)
-    $lbl.Tag = 'SectionHeader'
-    $lbl.FlowBreak = $true
-    return $lbl
+
+    $wrapper = New-Object System.Windows.Forms.Panel
+
+    $hdr = New-Object System.Windows.Forms.Label
+    $hdr.Text = $Text.ToUpper()
+    $hdr.ForeColor = $script:Theme.TextTertiary
+    $hdr.Font = New-Object System.Drawing.Font("Segoe UI", 8, [System.Drawing.FontStyle]::Bold)
+    $hdr.AutoSize = $false
+    $hdr.Location = New-Object System.Drawing.Point(4, 0)
+    $hdr.Size = New-Object System.Drawing.Size(300, 20)
+    $wrapper.Controls.Add($hdr)
+    $script:ThemedSectionHeaders.Add($hdr) | Out-Null
+
+    $innerBoard = New-Object System.Windows.Forms.FlowLayoutPanel
+    $innerBoard.Location = New-Object System.Drawing.Point(0, 24)
+    $innerBoard.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $innerBoard.WrapContents = $true
+    $innerBoard.AutoSize = $true
+    $innerBoard.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
+    $wrapper.Controls.Add($innerBoard)
+
+    $script:WinBoard.Controls.Add($wrapper)
+    $script:WinBoardSections.Add([PSCustomObject]@{ Wrapper = $wrapper; InnerBoard = $innerBoard }) | Out-Null
+    $script:CurrentSectionInnerBoard = $innerBoard
+}
+
+function Update-WinBoardReflow {
+    # Manually Y-positions every section wrapper in $script:WinBoard and re-syncs each one's (and
+    # its inner tile board's) Width to the board's current width. Called on every resize of the
+    # Windows tab's boardScroll and after every filter-chip click, so hiding/showing tiles
+    # correctly closes/reopens gaps between sections.
+    #
+    # This exists because $script:WinBoard is a plain Panel, not a FlowLayoutPanel, for the
+    # Windows tab specifically - three earlier attempts at doing this with FlowLayoutPanel's own
+    # wrap/FlowBreak/AutoSize machinery each fixed one bug and surfaced another (row-sharing at
+    # wide widths -> a ~104px phantom gap at every section boundary once that was fixed -> the
+    # same gap just relocated when height-matching was tried -> the whole board refusing to
+    # shrink back down on resize once FlowBreak was dropped in favor of dynamic full-row width,
+    # because AutoSize won't let a FlowLayoutPanel get narrower than its widest child, which was
+    # the very thing being resized - all confirmed via direct Controls/GetFlowBreak dumps, not
+    # guessed). Manual positioning sidesteps all of it: no flow algorithm to fight, so nothing to
+    # get subtly wrong across resize + filter interacting at once (verified together, not just
+    # separately, in an isolated test before this was applied here - see PLAN.md).
+    if (-not $script:WinBoard) { return }
+    $width = $script:WinBoard.Width
+    $y = 0
+    foreach ($s in $script:WinBoardSections) {
+        if (-not $s.Wrapper.Visible) { continue }
+        $s.Wrapper.Width = $width
+        $s.InnerBoard.Width = $width
+        $s.InnerBoard.PerformLayout()
+        $s.Wrapper.Height = $s.InnerBoard.Location.Y + $s.InnerBoard.Height + 4
+        $s.Wrapper.Location = New-Object System.Drawing.Point(0, $y)
+        $y += $s.Wrapper.Height + 10
+    }
+    $script:WinBoard.Height = $y
 }
 
 function New-SettingsTile {
     # -ControlType 'Toggle' needs -GetState/-OnAction/-OffAction. 'Action' and 'Check' need only
     # -RunAction. -OnLabel/-OffLabel let a toggle read as e.g. "CENTER"/"LEFT" instead of the
     # generic "ON"/"OFF" when the setting isn't a simple enabled/disabled feature.
+    #
+    # Color discipline: the tier system (stripe/tag/filter chips) is the ONLY place color
+    # appears anywhere in this app. Action/Check buttons render neutral even inside a tier
+    # tile - the stripe and tag already say which tier it is, the button doesn't repeat it.
     param(
         [string]$Title,
         [string]$Description,
@@ -380,11 +721,7 @@ function New-SettingsTile {
         [string]$OnLabel = 'ON',
         [string]$OffLabel = 'OFF'
     )
-    $tierColor = switch ($Tier) {
-        'Adjust' { $global:AccentOrange }
-        'Check'  { [System.Drawing.Color]::FromArgb(125, 211, 252) }
-        'Review' { [System.Drawing.Color]::FromArgb(251, 191, 36) }
-    }
+    $tierColor = Get-TierColor -Tier $Tier
     $tierLabel = switch ($Tier) {
         'Adjust' { 'ADJUST' }
         'Check'  { 'READ-ONLY' }
@@ -394,13 +731,9 @@ function New-SettingsTile {
     $tile = New-Object System.Windows.Forms.Panel
     $tile.Size = New-Object System.Drawing.Size(228, 124)
     $tile.Margin = New-Object System.Windows.Forms.Padding(4)
-    $tile.BackColor = [System.Drawing.Color]::FromArgb(22, 18, 26)
-
-    $stripe = New-Object System.Windows.Forms.Panel
-    $stripe.Size = New-Object System.Drawing.Size(228, 3)
-    $stripe.Location = New-Object System.Drawing.Point(0, 0)
-    $stripe.BackColor = $tierColor
-    $tile.Controls.Add($stripe)
+    $tile.BackColor = $script:Theme.BgSurface
+    Add-Member -InputObject $tile -NotePropertyName StripeColor -NotePropertyValue $tierColor -Force
+    Add-TilePaint -Tile $tile
 
     $lblTag = New-Object System.Windows.Forms.Label
     $lblTag.Text = $tierLabel
@@ -413,7 +746,7 @@ function New-SettingsTile {
 
     $lblTitle = New-Object System.Windows.Forms.Label
     $lblTitle.Text = $Title
-    $lblTitle.ForeColor = [System.Drawing.Color]::White
+    $lblTitle.ForeColor = $script:Theme.TextPrimary
     $lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 9.5, [System.Drawing.FontStyle]::Bold)
     $lblTitle.AutoSize = $false
     $lblTitle.Location = New-Object System.Drawing.Point(12, 24)
@@ -422,7 +755,7 @@ function New-SettingsTile {
 
     $lblDesc = New-Object System.Windows.Forms.Label
     $lblDesc.Text = $Description
-    $lblDesc.ForeColor = [System.Drawing.Color]::FromArgb(148, 143, 163)
+    $lblDesc.ForeColor = $script:Theme.TextSecondary
     $lblDesc.Font = New-Object System.Drawing.Font("Segoe UI", 8)
     $lblDesc.AutoSize = $false
     $lblDesc.Location = New-Object System.Drawing.Point(12, 44)
@@ -437,20 +770,54 @@ function New-SettingsTile {
     $tooltip.SetToolTip($lblTitle, $Description)
     $tooltip.SetToolTip($lblDesc, $Description)
 
-    $btn = New-Object System.Windows.Forms.Button
-    $btn.Size = New-Object System.Drawing.Size(204, 26)
-    $btn.Location = New-Object System.Drawing.Point(12, 92)
-    $btn.FlatStyle = 'Flat'
-    $btn.FlatAppearance.BorderSize = 1
-    $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+    $stateLabel = $null
+    if ($ControlType -eq 'Toggle') {
+        # Small right-aligned pill switch + a left-aligned state label, instead of one
+        # full-width ON/OFF button - mirrors the approved mockup's switch-row layout.
+        $btn = New-Object System.Windows.Forms.Button
+        $btn.Size = New-Object System.Drawing.Size(40, 20)
+        $btn.Location = New-Object System.Drawing.Point(176, 94)
+        $btn.FlatStyle = 'Flat'
+        $btn.FlatAppearance.BorderSize = 0
+        $btn.BackColor = $script:Theme.BgSurface
+        $btn.Text = ''
+        Add-PillSwitchPaint -Button $btn
+
+        $stateLabel = New-Object System.Windows.Forms.Label
+        $stateLabel.AutoSize = $false
+        $stateLabel.Location = New-Object System.Drawing.Point(12, 96)
+        $stateLabel.Size = New-Object System.Drawing.Size(158, 16)
+        $stateLabel.ForeColor = $script:Theme.TextTertiary
+        $stateLabel.Font = New-Object System.Drawing.Font("Segoe UI", 7.5, [System.Drawing.FontStyle]::Bold)
+        $tile.Controls.Add($stateLabel)
+    } else {
+        $btn = New-Object System.Windows.Forms.Button
+        $btn.Size = New-Object System.Drawing.Size(204, 26)
+        $btn.Location = New-Object System.Drawing.Point(12, 92)
+        $btn.FlatStyle = 'Flat'
+        $btn.FlatAppearance.BorderSize = 1
+        $btn.Font = New-Object System.Drawing.Font("Segoe UI", 8.5, [System.Drawing.FontStyle]::Bold)
+        # BgSurfaceRaised, not BgSurface - a button that shared the tile's own BgSurface fill was
+        # nearly invisible in light mode (white-on-white, distinguished only by a faint border,
+        # confirmed via live testing) - giving it its own step-up surface fixes that in both
+        # modes without needing a heavier border.
+        $btn.BackColor = $script:Theme.BgSurfaceRaised
+        $btn.ForeColor = $script:Theme.TextSecondary
+        $btn.FlatAppearance.BorderColor = $script:Theme.BorderSubtle
+        Add-FlatRoundedPaint -Control $btn -Radius 6 -ParentColor { $script:Theme.BgSurface }
+    }
 
     # Bundled on .Tag (not closed-over function parameters) so the click handler - which fires
     # long after this function call has returned - reads it via $this.Tag. PowerShell scriptblocks
     # used as .NET event delegates don't reliably keep a live closure over a finished function call's local
     # parameters, so anything the handler needs at click-time has to travel on the control itself.
+    # Also carries direct references to every recolorable child control, so Set-AppTheme's
+    # repaint sweep can address each one explicitly rather than indexing into .Controls.
     $bundle = [PSCustomObject]@{
         Tier = $Tier; GetState = $GetState; OnAction = $OnAction; OffAction = $OffAction
-        RunAction = $RunAction; OnLabel = $OnLabel; OffLabel = $OffLabel
+        RunAction = $RunAction; OnLabel = $OnLabel; OffLabel = $OffLabel; ControlType = $ControlType
+        TagLabel = $lblTag; TitleLabel = $lblTitle; DescLabel = $lblDesc
+        ActionButton = $btn; StateLabel = $stateLabel
     }
     $tile.Tag = $bundle
     $btn.Tag = $bundle
@@ -467,56 +834,70 @@ function New-SettingsTile {
         }
         'Action' {
             $btn.Text = if ($Tier -eq 'Review') { 'Run...' } else { 'Run' }
-            $btn.BackColor = [System.Drawing.Color]::FromArgb(22, 18, 26)
-            $btn.ForeColor = $tierColor
-            $btn.FlatAppearance.BorderColor = $tierColor
             $btn.Add_Click({ Invoke-Safe -OutputBox $outputBox -Action { & $this.Tag.RunAction } })
         }
         'Check' {
             $btn.Text = 'Check'
-            $btn.BackColor = [System.Drawing.Color]::FromArgb(22, 18, 26)
-            $btn.ForeColor = $tierColor
-            $btn.FlatAppearance.BorderColor = $tierColor
             $btn.Add_Click({ Invoke-Safe -OutputBox $outputBox -Action { & $this.Tag.RunAction } })
         }
     }
     $tile.Controls.Add($btn)
+    $script:ThemedTiles.Add($tile) | Out-Null
     return $tile
 }
 
 function Update-TileFilter {
-    # Hides a section's header too when none of its tiles match the current filter, so filtering
-    # to e.g. "Review First" doesn't leave empty section labels with nothing under them. Takes
-    # -Board explicitly since every tab now has its own independent board (see New-TileBoard).
-    param([System.Windows.Forms.FlowLayoutPanel]$Board, [string]$Filter)
-    $currentHeader = $null
-    $headerVisible = @{}
+    # -Board is typed as the base Control class, not FlowLayoutPanel - $script:WinBoard is a
+    # plain Panel (see Update-WinBoardReflow), the other three tabs' boards are still
+    # FlowLayoutPanels, and this one function still has to accept either.
+    #
+    # $script:WinBoard needs a completely different path: its tiles live inside each section's
+    # own inner board, not as direct children, and hiding a section's only-visible tiles has to
+    # also hide the section wrapper (so filtering to e.g. "Review First" doesn't leave an empty
+    # section label with nothing under it) and re-run the manual reflow, since nothing here wraps
+    # or repositions itself automatically the way a real FlowLayoutPanel would.
+    param([System.Windows.Forms.Control]$Board, [string]$Filter)
+    if ($Board -eq $script:WinBoard) {
+        foreach ($s in $script:WinBoardSections) {
+            $anyVisible = $false
+            foreach ($ctrl in $s.InnerBoard.Controls) {
+                if ($ctrl.Tag -and $ctrl.Tag.Tier) {
+                    $isVisible = ($Filter -eq 'All') -or ($ctrl.Tag.Tier -eq $Filter)
+                    $ctrl.Visible = $isVisible
+                    if ($isVisible) { $anyVisible = $true }
+                }
+            }
+            $s.Wrapper.Visible = $anyVisible
+        }
+        Update-WinBoardReflow
+        return
+    }
     foreach ($ctrl in $Board.Controls) {
-        if ($ctrl.Tag -eq 'SectionHeader') {
-            $currentHeader = $ctrl
-            $headerVisible[$currentHeader] = $false
-        } elseif ($ctrl.Tag -and $ctrl.Tag.Tier) {
-            $isVisible = ($Filter -eq 'All') -or ($ctrl.Tag.Tier -eq $Filter)
-            $ctrl.Visible = $isVisible
-            if ($isVisible -and $currentHeader) { $headerVisible[$currentHeader] = $true }
+        if ($ctrl.Tag -and $ctrl.Tag.Tier) {
+            $ctrl.Visible = ($Filter -eq 'All') -or ($ctrl.Tag.Tier -eq $Filter)
         }
     }
-    foreach ($header in $headerVisible.Keys) { $header.Visible = $headerVisible[$header] }
 }
 
 function New-FilterChip {
-    param([string]$Text, [string]$Filter, [int]$X, [System.Drawing.Color]$Color)
+    # Color is derived from -Filter via Get-TierColor rather than passed in - the "All" chip
+    # gets Get-TierColor's neutral default, the three tier chips get their tier color, and both
+    # cases repaint identically on a theme switch since Update-ChipVisual re-derives from the
+    # same function.
+    param([string]$Text, [string]$Filter, [int]$X)
     $chip = New-Object System.Windows.Forms.Button
     $chip.Text = $Text
     $chip.Size = New-Object System.Drawing.Size(120, 24)
     $chip.Location = New-Object System.Drawing.Point($X, 3)
     $chip.FlatStyle = 'Flat'
-    $chip.FlatAppearance.BorderSize = 1
-    $chip.FlatAppearance.BorderColor = $Color
+    # BorderSize stays 0 - Add-ChipPaint draws the fill and border manually (see its own
+    # comment for why), BorderColor is just where Update-ChipVisual stores the color for it.
+    $chip.FlatAppearance.BorderSize = 0
     $chip.Font = New-Object System.Drawing.Font("Segoe UI", 8)
-    $chip.ForeColor = $Color
-    $chip.BackColor = [System.Drawing.Color]::FromArgb(22, 18, 26)
-    $chip.Tag = $Filter
+    Add-ChipPaint -Chip $chip
+    $chip.Tag = [PSCustomObject]@{ Filter = $Filter; IsActive = $false; Board = $null; Siblings = $null }
+    Update-ChipVisual -Chip $chip
+    $script:ThemedChips.Add($chip) | Out-Null
     return $chip
 }
 
@@ -553,32 +934,157 @@ function New-TileBoard {
     $board.AutoSizeMode = [System.Windows.Forms.AutoSizeMode]::GrowAndShrink
     $boardScroll.Controls.Add($board)
 
-    $chipAll = New-FilterChip -Text "All" -Filter 'All' -X 0 -Color ([System.Drawing.Color]::FromArgb(180, 176, 190))
-    $chipAdjust = New-FilterChip -Text "Adjust" -Filter 'Adjust' -X 124 -Color $global:AccentOrange
-    $chipCheck = New-FilterChip -Text "Read-only" -Filter 'Check' -X 248 -Color ([System.Drawing.Color]::FromArgb(125, 211, 252))
-    $chipReview = New-FilterChip -Text "Review First" -Filter 'Review' -X 372 -Color ([System.Drawing.Color]::FromArgb(251, 191, 36))
+    $chipAll = New-FilterChip -Text "All" -Filter 'All' -X 0
+    $chipAdjust = New-FilterChip -Text "Adjust" -Filter 'Adjust' -X 124
+    $chipCheck = New-FilterChip -Text "Read-only" -Filter 'Check' -X 248
+    $chipReview = New-FilterChip -Text "Review First" -Filter 'Review' -X 372
     $chips = @($chipAll, $chipAdjust, $chipCheck, $chipReview)
     foreach ($chip in $chips) {
-        $chip.Tag = [PSCustomObject]@{ Board = $board; Filter = $chip.Tag; Siblings = $chips }
+        $chip.Tag.Board = $board
+        $chip.Tag.Siblings = $chips
         $chipRow.Controls.Add($chip)
     }
     foreach ($c in $chips) {
         $c.Add_Click({
-            foreach ($other in $this.Tag.Siblings) {
-                $other.BackColor = [System.Drawing.Color]::FromArgb(22, 18, 26)
-                $other.ForeColor = $other.FlatAppearance.BorderColor
-            }
-            $this.BackColor = $this.FlatAppearance.BorderColor
-            $this.ForeColor = [System.Drawing.Color]::FromArgb(8, 8, 10)
+            foreach ($other in $this.Tag.Siblings) { $other.Tag.IsActive = $false; Update-ChipVisual -Chip $other }
+            $this.Tag.IsActive = $true
+            Update-ChipVisual -Chip $this
             Update-TileFilter -Board $this.Tag.Board -Filter $this.Tag.Filter
         })
     }
     # "All" starts selected
-    $chipAll.BackColor = $chipAll.FlatAppearance.BorderColor
-    $chipAll.ForeColor = [System.Drawing.Color]::FromArgb(8, 8, 10)
+    $chipAll.Tag.IsActive = $true
+    Update-ChipVisual -Chip $chipAll
 
     return $board
 }
+
+function New-SectionedTileBoard {
+    # Windows Tuning-specific variant of New-TileBoard - the only tab that groups tiles under
+    # named section headers. Reuses the identical chip-row + AutoScroll plumbing, but the actual
+    # tile-hosting area is a plain Panel (manually Y-positioned by Update-WinBoardReflow), not a
+    # FlowLayoutPanel - see that function's comment for why. A small amount of duplication with
+    # New-TileBoard rather than adding a branchy switch to the one function every other tab
+    # depends on and already works correctly.
+    param([System.Windows.Forms.Control]$Parent)
+
+    $chipRow = New-Object System.Windows.Forms.Panel
+    $chipRow.Location = New-Object System.Drawing.Point(0, 0)
+    $chipRow.Size = New-Object System.Drawing.Size(830, 30)
+    $Parent.Controls.Add($chipRow)
+
+    $boardScroll = New-Object System.Windows.Forms.Panel
+    $boardScroll.Location = New-Object System.Drawing.Point(0, 34)
+    $boardScroll.Size = New-Object System.Drawing.Size(830, 386)
+    $boardScroll.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
+    $boardScroll.AutoScroll = $true
+    $Parent.Controls.Add($boardScroll)
+
+    # Plain Panel, not a FlowLayoutPanel - Update-WinBoardReflow positions every section wrapper
+    # manually. No AutoSize here either, for the same "nested AutoSize containers fight explicit
+    # Width/Height assignments" reason documented on the section wrapper itself.
+    $board = New-Object System.Windows.Forms.Panel
+    $board.Location = New-Object System.Drawing.Point(0, 0)
+    $board.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right
+    $boardScroll.Controls.Add($board)
+
+    $chipAll = New-FilterChip -Text "All" -Filter 'All' -X 0
+    $chipAdjust = New-FilterChip -Text "Adjust" -Filter 'Adjust' -X 124
+    $chipCheck = New-FilterChip -Text "Read-only" -Filter 'Check' -X 248
+    $chipReview = New-FilterChip -Text "Review First" -Filter 'Review' -X 372
+    $chips = @($chipAll, $chipAdjust, $chipCheck, $chipReview)
+    foreach ($chip in $chips) {
+        $chip.Tag.Board = $board
+        $chip.Tag.Siblings = $chips
+        $chipRow.Controls.Add($chip)
+    }
+    foreach ($c in $chips) {
+        $c.Add_Click({
+            foreach ($other in $this.Tag.Siblings) { $other.Tag.IsActive = $false; Update-ChipVisual -Chip $other }
+            $this.Tag.IsActive = $true
+            Update-ChipVisual -Chip $this
+            Update-TileFilter -Board $this.Tag.Board -Filter $this.Tag.Filter
+        })
+    }
+    $chipAll.Tag.IsActive = $true
+    Update-ChipVisual -Chip $chipAll
+
+    # Anchor keeps $board's own Width correctly tracking $boardScroll live on every resize (the
+    # same reliable pattern already proven for every other tab's board) - this just also reflows
+    # the sections whenever that happens, since they can't rely on FlowLayoutPanel to do it
+    # themselves anymore.
+    $boardScroll.Add_SizeChanged({ Update-WinBoardReflow })
+
+    return $board
+}
+
+function Set-AppTheme {
+    # The one function that switches the app's entire visual theme - sets $script:Theme, then
+    # repaints every already-built control from the explicit registries (tiles/chips/section
+    # headers) plus the small set of named top-level controls, re-applies the native dark title
+    # bar, and persists the choice. Called once at startup (after every board/tile/dialog control
+    # below has been constructed) and again from the header toggle's click handler.
+    param([ValidateSet('Dark', 'Light')][string]$Mode)
+    $script:ThemeMode = $Mode
+    $script:Theme = $Themes[$Mode]
+
+    $darkFlag = if ($Mode -eq 'Dark') { 1 } else { 0 }
+    try { [DwmHelper]::DwmSetWindowAttribute($form.Handle, 20, [ref]$darkFlag, 4) | Out-Null } catch { }
+
+    $form.BackColor = $script:Theme.BgWindow
+    $form.ForeColor = $script:Theme.TextPrimary
+    $headerLabel.ForeColor = $script:Theme.TextSecondary
+    $accentBar.Invalidate()
+    $splitContainer.BackColor = $script:Theme.BgSurfaceRaised
+
+    $themeToggle.BackColor = $script:Theme.BgWindow
+    $themeToggle.Invalidate()
+    $themeToggleLabel.ForeColor = $script:Theme.TextSecondary
+    $themeToggleLabel.Text = $Mode.ToUpper()
+
+    foreach ($btn in @($btnOpenTools, $btnClear, $btnRestartExplorer)) {
+        $btn.BackColor = $script:Theme.BgSurface
+        $btn.ForeColor = $script:Theme.TextSecondary
+        $btn.Invalidate()
+    }
+
+    foreach ($chip in $script:ThemedChips) { Update-ChipVisual -Chip $chip }
+    foreach ($hdr in $script:ThemedSectionHeaders) { $hdr.ForeColor = $script:Theme.TextTertiary }
+
+    foreach ($tile in $script:ThemedTiles) {
+        $b = $tile.Tag
+        $tierColor = Get-TierColor -Tier $b.Tier
+        $tile.BackColor = $script:Theme.BgSurface
+        $tile.StripeColor = $tierColor
+        $tile.Invalidate()
+        $b.TagLabel.ForeColor = $tierColor
+        $b.TitleLabel.ForeColor = $script:Theme.TextPrimary
+        $b.DescLabel.ForeColor = $script:Theme.TextSecondary
+        if ($b.ControlType -eq 'Toggle') {
+            $b.ActionButton.BackColor = $script:Theme.BgSurface
+            $b.ActionButton.Invalidate()
+            $b.StateLabel.ForeColor = $script:Theme.TextTertiary
+        } else {
+            # BgSurfaceRaised, not BgSurface - see the matching comment in New-SettingsTile.
+            $b.ActionButton.BackColor = $script:Theme.BgSurfaceRaised
+            $b.ActionButton.ForeColor = $script:Theme.TextSecondary
+            $b.ActionButton.FlatAppearance.BorderColor = $script:Theme.BorderSubtle
+            $b.ActionButton.Invalidate()
+        }
+    }
+
+    Show-Section -Section $script:CurrentSection
+
+    New-Item -Path $script:ThemeModeKey -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path $script:ThemeModeKey -Name 'ThemeMode' -Value $Mode -ErrorAction SilentlyContinue
+}
+
+$themeToggle.Tag = [PSCustomObject]@{ GetState = { $script:ThemeMode -eq 'Light' } }
+Add-PillSwitchPaint -Button $themeToggle
+$themeToggle.Add_Click({
+    $newMode = if ($script:ThemeMode -eq 'Dark') { 'Light' } else { 'Dark' }
+    Set-AppTheme -Mode $newMode
+})
 
 # Tab content (top) and the output console (bottom) share the window through a SplitContainer
 # instead of two independently-anchored siblings - plain WinForms anchors can make ONE control
@@ -593,7 +1099,7 @@ $splitContainer.Size = New-Object System.Drawing.Size(830, 710)
 $splitContainer.Anchor = [System.Windows.Forms.AnchorStyles]::Top -bor [System.Windows.Forms.AnchorStyles]::Left -bor [System.Windows.Forms.AnchorStyles]::Right -bor [System.Windows.Forms.AnchorStyles]::Bottom
 $splitContainer.Orientation = [System.Windows.Forms.Orientation]::Horizontal
 $splitContainer.SplitterWidth = 6
-$splitContainer.BackColor = [System.Drawing.Color]::FromArgb(40, 32, 46)
+$splitContainer.BackColor = $script:Theme.BgSurfaceRaised
 $splitContainer.Panel1MinSize = 150
 $splitContainer.Panel2MinSize = 100
 $splitContainer.FixedPanel = [System.Windows.Forms.FixedPanel]::None
@@ -624,9 +1130,11 @@ $panelParent.Controls.Add($panelWindows)
 # Windows Tuning content: one scrollable board of tiles instead of the old 9-sub-tab switcher
 # (see PLAN.md, "Windows Tuning Redesign") - a filter-chip row up top narrows the board by tier,
 # section headers inside the board keep settings grouped without adding a second click level.
-# New-TileBoard (defined further below, hoisted like every other function in this script) builds
-# the shared chip-row + scrollable board plumbing now reused by every tab.
-$script:WinBoard = New-TileBoard -Parent $panelWindows
+# New-SectionedTileBoard (defined further below, hoisted like every other function in this
+# script) builds the Windows-tab-specific variant of the shared chip-row + scrollable board
+# plumbing - see its own comment and Update-WinBoardReflow for why this tab needs a different
+# structure than the other three.
+$script:WinBoard = New-SectionedTileBoard -Parent $panelWindows
 
 $panelGraphics = New-Object System.Windows.Forms.Panel
 $panelGraphics.Location = New-Object System.Drawing.Point(0, 0)
@@ -648,18 +1156,25 @@ function Show-Section {
     # $Sections defaults to the top-level tabs. The Windows tab no longer nests its own sub-tabs
     # (see the Windows Tuning tile board below) - -Sections is kept as an optional override for
     # any future tab that needs the same highlight/switch logic against its own section list.
+    # Neutral only - the active tab is a background/weight shift, not a tier or accent color -
+    # tracks $script:CurrentSection so Set-AppTheme can re-run this after a mode switch.
     param([string]$Section, $Sections = $script:Sections)
-    $activeBg = [System.Drawing.Color]::FromArgb(40, 32, 46)
-    $inactiveBg = [System.Drawing.Color]::FromArgb(14, 14, 16)
-    $activeFg = $global:AccentOrange
-    $inactiveFg = [System.Drawing.Color]::FromArgb(150, 150, 155)
-
+    $script:CurrentSection = $Section
     foreach ($s in $Sections) {
         $isActive = $s.Name -eq $Section
         $s.Panel.Visible = $isActive
-        $s.Button.BackColor = if ($isActive) { $activeBg } else { $inactiveBg }
-        $s.Button.ForeColor = if ($isActive) { $activeFg } else { $inactiveFg }
+        $s.Button.BackColor = if ($isActive) { $script:Theme.BgSurfaceRaised } else { $script:Theme.BgSurface }
+        $s.Button.ForeColor = if ($isActive) { $script:Theme.TextPrimary } else { $script:Theme.TextSecondary }
     }
+    # Windows Tuning's board is manually reflowed (see Update-WinBoardReflow), not a
+    # self-laying-out FlowLayoutPanel like the other three tabs. The Add_Shown reflow at launch
+    # always runs while this tab is still hidden (Check is shown first), and a FlowLayoutPanel's
+    # AutoSize PerformLayout() computes the wrong (near-zero) height for an invisible control
+    # chain - confirmed live: every section wrapper collapsed to a sliver, clipping all tiles out
+    # of view until the first filter-chip click forced another reflow while actually visible. Redo
+    # the reflow here, now that Visible is genuinely true, so the tab is correct the first time
+    # it's shown rather than only after a filter click.
+    if ($Section -eq 'Windows') { Update-WinBoardReflow }
 }
 $btnSectionCheck.Add_Click({ Show-Section -Section 'Check' })
 $btnSectionStress.Add_Click({ Show-Section -Section 'Stress' })
@@ -747,27 +1262,30 @@ function Show-ChoiceDialog {
     $dlg.FormBorderStyle = 'FixedDialog'
     $dlg.MaximizeBox = $false
     $dlg.MinimizeBox = $false
-    $dlg.BackColor = [System.Drawing.Color]::FromArgb(8, 8, 10)
+    $dlg.BackColor = $script:Theme.BgWindow
 
     $lbl = New-Object System.Windows.Forms.Label
     $lbl.Text = $Message
-    $lbl.ForeColor = [System.Drawing.Color]::White
+    $lbl.ForeColor = $script:Theme.TextPrimary
     $lbl.Font = New-Object System.Drawing.Font("Segoe UI", 9.5)
     $lbl.AutoSize = $false
     $lbl.Size = New-Object System.Drawing.Size(320, 40)
     $lbl.Location = New-Object System.Drawing.Point(15, 15)
     $dlg.Controls.Add($lbl)
 
+    # Neutral, not tier-colored - this dialog isn't tied to a specific tier (e.g. Taskbar
+    # Alignment's Center/Left choice), so both options render the same way.
     $btnA = New-Object System.Windows.Forms.Button
     $btnA.Text = $OptionA
     $btnA.Size = New-Object System.Drawing.Size(150, 40)
     $btnA.Location = New-Object System.Drawing.Point(15, 80)
     $btnA.FlatStyle = 'Flat'
-    $btnA.FlatAppearance.BorderSize = 2
-    $btnA.FlatAppearance.BorderColor = $global:AccentPurple
-    $btnA.BackColor = [System.Drawing.Color]::FromArgb(22, 18, 26)
-    $btnA.ForeColor = [System.Drawing.Color]::White
+    $btnA.FlatAppearance.BorderSize = 1
+    $btnA.FlatAppearance.BorderColor = $script:Theme.BorderSubtle
+    $btnA.BackColor = $script:Theme.BgSurface
+    $btnA.ForeColor = $script:Theme.TextPrimary
     $btnA.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+    Add-FlatRoundedPaint -Control $btnA -Radius 6 -ParentColor { $script:Theme.BgWindow }
     $dlg.Controls.Add($btnA)
 
     $btnB = New-Object System.Windows.Forms.Button
@@ -775,11 +1293,12 @@ function Show-ChoiceDialog {
     $btnB.Size = New-Object System.Drawing.Size(150, 40)
     $btnB.Location = New-Object System.Drawing.Point(175, 80)
     $btnB.FlatStyle = 'Flat'
-    $btnB.FlatAppearance.BorderSize = 2
-    $btnB.FlatAppearance.BorderColor = $global:AccentOrange
-    $btnB.BackColor = [System.Drawing.Color]::FromArgb(22, 18, 26)
-    $btnB.ForeColor = [System.Drawing.Color]::White
+    $btnB.FlatAppearance.BorderSize = 1
+    $btnB.FlatAppearance.BorderColor = $script:Theme.BorderSubtle
+    $btnB.BackColor = $script:Theme.BgSurface
+    $btnB.ForeColor = $script:Theme.TextPrimary
     $btnB.DialogResult = [System.Windows.Forms.DialogResult]::No
+    Add-FlatRoundedPaint -Control $btnB -Radius 6 -ParentColor { $script:Theme.BgWindow }
     $dlg.Controls.Add($btnB)
 
     $dlg.AcceptButton = $btnA
@@ -865,16 +1384,16 @@ $script:StressBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Chec
             -Note "Afterburner ships as a zip containing the installer - extract it, rename the installer to MSIAfterburnerSetup.exe, and drop it here. It installs a driver + background service (not portable) - run the installer once per PC."
     }))
 
-$script:WinBoard.Controls.Add((New-SectionHeader "Startup Apps"))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
+New-WinBoardSection "Startup Apps"
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
     -Title "Startup Apps" -Description "Lists what's currently set to launch when Windows starts, and opens Settings to change it." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-StartupAppsText)
         Start-Process "ms-settings:startupapps"
     }))
 
-$script:WinBoard.Controls.Add((New-SectionHeader "Taskbar & Start"))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
+New-WinBoardSection "Taskbar & Start"
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
     -Title "Clean Taskbar & Start" -Description "Hides Widgets/Search/Copilot/Task View, shows all tray icons, and unpins every current taskbar icon. Unpinning can't be undone automatically." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-TaskbarStartText)
@@ -908,7 +1427,7 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action
         }
         Write-ToolOutput $outputBox "Taskbar and Start menu cleaned. Sign out/in or restart Explorer if anything doesn't refresh immediately."
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
     -Title "Restore Default Taskbar & Start" -Description "Reverts the above back to Windows' default behavior. Does not restore previously-unpinned icons." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-TaskbarStartText)
@@ -937,7 +1456,7 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action
         }
         Write-ToolOutput $outputBox "Taskbar and Start menu reverted to defaults. Sign out/in or restart Explorer if anything doesn't refresh immediately."
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle -OnLabel "CENTER" -OffLabel "LEFT" `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle -OnLabel "CENTER" -OffLabel "LEFT" `
     -Title "Taskbar Alignment" -Description "Windows 11's default is Center. Left matches the classic Windows 10 layout. Takes effect immediately." `
     -GetState { Get-TaskbarAlignmentState } `
     -OnAction {
@@ -951,8 +1470,8 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle
         Write-ToolOutput $outputBox "Taskbar alignment set to Left."
     }))
 
-$script:WinBoard.Controls.Add((New-SectionHeader "Theme & Color"))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle -OnLabel "DARK" -OffLabel "LIGHT" `
+New-WinBoardSection "Theme & Color"
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle -OnLabel "DARK" -OffLabel "LIGHT" `
     -Title "Dark Mode" -Description "Switches Windows and apps to a dark or light color scheme. Doesn't touch the wallpaper or accent color." `
     -GetState { Get-ThemeState } `
     -OnAction {
@@ -998,7 +1517,7 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle
         Restart-ShellTheme
         Write-ToolOutput $outputBox "Light theme applied (system and apps both light, matching Dark Theme's symmetric opposite)."
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action `
     -Title "Accent Color" -Description "Opens Windows' own color picker to set the taskbar/Start/title bar accent color." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-AccentColorText)
@@ -1021,7 +1540,7 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action
         Restart-ShellTheme
         Write-ToolOutput $outputBox ("Accent color set to RGB({0}, {1}, {2})." -f $color.R, $color.G, $color.B)
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action `
     -Title "Reset Accent Color" -Description "Removes the accent color override, reverting to Windows' own default. Doesn't touch Dark Mode." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-AccentColorText)
@@ -1036,8 +1555,8 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action
         Write-ToolOutput $outputBox "Accent color overrides removed - reverted to Windows' own default."
     }))
 
-$script:WinBoard.Controls.Add((New-SectionHeader "Context Menu"))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle -OnLabel "CLASSIC" -OffLabel "DEFAULT" `
+New-WinBoardSection "Context Menu"
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle -OnLabel "CLASSIC" -OffLabel "DEFAULT" `
     -Title "Right-Click Menu" -Description "Classic shows the full Windows 10-style menu immediately, instead of Windows 11's shortened one." `
     -GetState { Get-ContextMenuState } `
     -OnAction {
@@ -1052,8 +1571,8 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle
         Write-ToolOutput $outputBox "Reverted to Windows 11's default context menu. Reopen File Explorer windows (or restart Explorer) if it doesn't show up immediately."
     }))
 
-$script:WinBoard.Controls.Add((New-SectionHeader "Windows Features"))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle `
+New-WinBoardSection "Windows Features"
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle `
     -Title "Widgets" -Description "The news/weather panel on the taskbar. Disabling stops the Widgets process immediately." `
     -GetState { Get-WidgetsState } `
     -OnAction {
@@ -1072,7 +1591,7 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle
         Stop-Process -Name WidgetService -Force -ErrorAction SilentlyContinue
         Write-ToolOutput $outputBox "Widgets disabled."
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle `
     -Title "Copilot" -Description "Microsoft's built-in AI assistant panel. Disabling stops the Copilot process immediately." `
     -GetState { Get-CopilotState } `
     -OnAction {
@@ -1091,8 +1610,8 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle
         Write-ToolOutput $outputBox "Copilot disabled."
     }))
 
-$script:WinBoard.Controls.Add((New-SectionHeader "Gaming Tweaks"))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle `
+New-WinBoardSection "Gaming Tweaks"
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle `
     -Title "Mouse Acceleration" -Description "Cursor speed depends on how fast you physically move the mouse. Most competitive/FPS players want this OFF." `
     -GetState { Get-MouseAccelState } `
     -OnAction {
@@ -1111,7 +1630,7 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle
         [MouseHelper]::SystemParametersInfo($script:SPI_SETMOUSE, 0, [int[]]@(0, 0, 0), $script:SPIF_SENDCHANGE) | Out-Null
         Write-ToolOutput $outputBox "Mouse acceleration disabled - takes effect immediately."
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle `
     -Title "Game Bar" -Description "Xbox's background recording/overlay (Win+G). The overlay hooking has a real measurable FPS cost while active." `
     -GetState { Get-GameBarState } `
     -OnAction {
@@ -1137,21 +1656,21 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle
         Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\GameDVR' -Name 'AllowGameDVR' -Value 0 -Type DWord
         Write-ToolOutput $outputBox "Game Bar and background game recording disabled."
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
     -Title "Game Mode Check" -Description "Shows whether Windows' Game Mode is currently on and opens Settings to change it." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-GameModeText)
         Start-Process "ms-settings:gaming-gamemode"
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
     -Title "Sound Devices" -Description "Opens the Sound panel to check for the wrong default mic/speaker (e.g. a webcam mic or HDMI passthrough)." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-SoundDevicesText)
         Start-Process "control.exe" -ArgumentList "mmsys.cpl"
     }))
 
-$script:WinBoard.Controls.Add((New-SectionHeader "Debloat"))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action `
+New-WinBoardSection "Debloat"
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action `
     -Title "Restore OneDrive" -Description "Reinstalls OneDrive using Microsoft's own official installer." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-OneDriveText)
@@ -1162,7 +1681,7 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action
         else { Write-ToolOutput $outputBox "OneDriveSetup.exe not found - OneDrive may need to be downloaded fresh from microsoft.com." ; return }
         Write-ToolOutput $outputBox "OneDrive reinstall started."
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action `
     -Title "Reinstall Xbox App" -Description "Puts back the Xbox app (Game Pass, cloud gaming) after Remove Bloatware took it out." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-XboxReinstallText)
@@ -1175,7 +1694,7 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action
             Start-Process "ms-windows-store://pdp/?productid=9MV0B5HZVK9Z"
         }
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle -OnLabel "TRIMMED" -OffLabel "DEFAULT" `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle -OnLabel "TRIMMED" -OffLabel "DEFAULT" `
     -Title "Background Services" -Description "Disables SysMain, DiagTrack, Windows Error Reporting, Retail Demo, and Downloaded Maps Manager. Doesn't affect printing or Start menu search." `
     -GetState { Get-ServicesState } `
     -OnAction {
@@ -1231,13 +1750,13 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle
         }
         Write-ToolOutput $outputBox "Services restored."
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
     -Title "Process Count Check" -Description "Shows how many processes are currently running and opens Task Manager." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-ProcessCountText)
         Start-Process taskmgr.exe
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
     -Title "Remove Bloatware" -Description "Removes ~40 pre-installed apps (Xbox, Cortana, OneDrive, etc). No bulk restore - reinstall individual apps from the Store if wanted back." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-BloatwareText)
@@ -1314,8 +1833,8 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action
         Write-ToolOutput $outputBox "Bloatware removal complete."
     }))
 
-$script:WinBoard.Controls.Add((New-SectionHeader "Performance"))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle -OnLabel "IPV4-ONLY" -OffLabel "DEFAULT" `
+New-WinBoardSection "Performance"
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle -OnLabel "IPV4-ONLY" -OffLabel "DEFAULT" `
     -Title "Network Bindings" -Description "Disables everything except IPv4 (IPv6, File Sharing, QoS, LLDP, etc) on physical Ethernet adapters. WiFi/virtual adapters are untouched." `
     -GetState { Get-NetworkBindingsState } `
     -OnAction {
@@ -1350,7 +1869,7 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle
         }
         Write-ToolOutput $outputBox "Network bindings restored."
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
     -Title "Set Ultimate Power Plan" -Description "Activates Windows' hidden max-performance plan and permanently deletes every other power plan, including any custom ones." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-PowerPlanText)
@@ -1381,14 +1900,14 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action
             Write-ToolOutput $outputBox "Could not create the Ultimate Performance plan."
         }
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
     -Title "Reset Power Plans" -Description "Restores Windows' normal Balanced/Power Saver/High Performance set. Doesn't recreate any custom plans that were previously deleted." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-PowerPlanText)
         & powercfg -restoredefaultschemes
         Write-ToolOutput $outputBox "Power plans reset to Windows' default set (Balanced active)."
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
     -Title "System Cleanup" -Description "Clears temp folders, the Windows Update cache, and empties the Recycle Bin. Deletes files permanently." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-CleanupText)
@@ -1429,7 +1948,7 @@ $script:WinBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action
 
         Write-ToolOutput $outputBox ("Cleanup complete - approximately {0:N1} MB freed." -f ($totalFreed / 1MB))
     }))
-$script:WinBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
     -Title "Open Disk Cleanup" -Description "Additional cleanup for shader cache, Windows Update leftovers, old driver packages, and old Windows installs - not a broader alternative to System Cleanup, which already covers temp files/WU cache/Recycle Bin. Windows.old removal is permanent." `
     -RunAction {
         Write-ToolOutput $outputBox (Get-DiskCleanupText)
@@ -1571,9 +2090,10 @@ $btnOpenTools.Size = New-Object System.Drawing.Size(150, 30)
 $btnOpenTools.Location = New-Object System.Drawing.Point(15, 822)
 $btnOpenTools.FlatStyle = 'Flat'
 $btnOpenTools.FlatAppearance.BorderSize = 0
-$btnOpenTools.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 34)
-$btnOpenTools.ForeColor = [System.Drawing.Color]::White
+$btnOpenTools.BackColor = $script:Theme.BgSurface
+$btnOpenTools.ForeColor = $script:Theme.TextSecondary
 $btnOpenTools.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+Add-FlatRoundedPaint -Control $btnOpenTools -Radius 6 -ParentColor { $script:Theme.BgWindow }
 $form.Controls.Add($btnOpenTools)
 
 $btnClear = New-Object System.Windows.Forms.Button
@@ -1582,9 +2102,10 @@ $btnClear.Size = New-Object System.Drawing.Size(150, 30)
 $btnClear.Location = New-Object System.Drawing.Point(175, 822)
 $btnClear.FlatStyle = 'Flat'
 $btnClear.FlatAppearance.BorderSize = 0
-$btnClear.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 34)
-$btnClear.ForeColor = [System.Drawing.Color]::White
+$btnClear.BackColor = $script:Theme.BgSurface
+$btnClear.ForeColor = $script:Theme.TextSecondary
 $btnClear.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+Add-FlatRoundedPaint -Control $btnClear -Radius 6 -ParentColor { $script:Theme.BgWindow }
 $form.Controls.Add($btnClear)
 
 $btnRestartExplorer = New-Object System.Windows.Forms.Button
@@ -1593,9 +2114,10 @@ $btnRestartExplorer.Size = New-Object System.Drawing.Size(150, 30)
 $btnRestartExplorer.Location = New-Object System.Drawing.Point(335, 822)
 $btnRestartExplorer.FlatStyle = 'Flat'
 $btnRestartExplorer.FlatAppearance.BorderSize = 0
-$btnRestartExplorer.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 34)
-$btnRestartExplorer.ForeColor = [System.Drawing.Color]::White
+$btnRestartExplorer.BackColor = $script:Theme.BgSurface
+$btnRestartExplorer.ForeColor = $script:Theme.TextSecondary
 $btnRestartExplorer.Anchor = [System.Windows.Forms.AnchorStyles]::Bottom -bor [System.Windows.Forms.AnchorStyles]::Left
+Add-FlatRoundedPaint -Control $btnRestartExplorer -Radius 6 -ParentColor { $script:Theme.BgWindow }
 $form.Controls.Add($btnRestartExplorer)
 
 $btnOpenTools.Add_Click({ Start-Process explorer.exe $ToolsDir })
@@ -1618,13 +2140,13 @@ $form.Add_Shown({
         $b.Width = $b.Parent.ClientSize.Width
         $b.PerformLayout()
     }
+    Update-WinBoardReflow
 })
 
-try {
-    $darkMode = 1
-    # attribute 20 = DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 10 20H1+ / Windows 11).
-    # Accessing .Handle forces the window handle to exist before the app loop starts.
-    [DwmHelper]::DwmSetWindowAttribute($form.Handle, 20, [ref]$darkMode, 4) | Out-Null
-} catch { }
+# Applies the persisted (or default Dark) theme to every already-built control, including the
+# native title bar (DWMWA_USE_IMMERSIVE_DARK_MODE, attribute 20) - accessing .Handle inside
+# Set-AppTheme forces the window handle to exist before the app loop starts. Must run after
+# Show-Section above so $script:CurrentSection is already set to 'Check', not $null.
+Set-AppTheme -Mode $script:ThemeMode
 
 [System.Windows.Forms.Application]::Run($form)
