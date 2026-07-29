@@ -1,0 +1,6 @@
+# Third-party tools are cached locally per-machine but never committed here -
+# see Tools/README.txt for the official download source of each one.
+# Redistributing third-party binaries in this repo would be the exact
+# "third-party mirror" pattern this project avoids everywhere else.
+Tools/*
+!Tools/README.txt

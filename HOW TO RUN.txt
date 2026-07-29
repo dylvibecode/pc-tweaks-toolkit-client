@@ -1,0 +1,32 @@
+PC Tweaks Toolkit - Quick Start
+================================
+
+1. On the GitHub page, click the green "Code" button, then "Download ZIP".
+   Extract the zip somewhere (Desktop is fine) - keep all the files and
+   folders together, don't pull Toolkit.ps1 out on its own.
+
+2. Double-click "Launch Toolkit.bat" to start it.
+   (Don't use "Run with PowerShell" on Toolkit.ps1 directly - on some PCs
+   that opens and closes a black window instantly with no error visible,
+   because Windows' default security setting blocks scripts from running
+   that way. The .bat file works around that safely, every time.)
+
+3. The FIRST time you run it, you'll likely see a blue "Windows protected
+   your PC" screen. This is normal - Windows shows this once for any tool
+   downloaded from the internet that it doesn't recognize yet. Click
+   "More info", then "Run anyway" (or just press R). It should not ask
+   again after this.
+
+4. It'll ask for Administrator permission once when it opens - click Yes.
+   That's needed for a couple of the buttons (Safe Mode reboot, etc).
+
+5. That's it - click around. A few buttons (CPU-Z, GPU-Z, HWiNFO, OCCT,
+   Heaven, MSI Afterburner, DDU) use third-party tools that aren't included
+   in this download (see Tools/README.txt) - the first time you click one
+   of those, it'll open the official download page for you automatically
+   if it's not already cached in the Tools folder.
+
+Troubleshooting: if double-clicking the .bat still does nothing, open a
+PowerShell window in this folder and run:
+   powershell -ExecutionPolicy Bypass -File "Toolkit.ps1"
+Any error message will stay visible in that window so it can be read.
