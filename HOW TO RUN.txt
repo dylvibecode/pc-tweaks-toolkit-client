@@ -20,8 +20,12 @@ PC Tweaks Toolkit - Quick Start
    That's needed for a couple of the buttons (Safe Mode reboot, etc).
 
 5. That's it - click around. Buttons that need an extra tool (CPU-Z, GPU-Z,
-   HWiNFO, OCCT, Heaven, MSI Afterburner, DDU) already have those cached in
-   the Tools folder, so they should just open directly.
+   HWiNFO, OCCT, Heaven, MSI Afterburner, DDU) check the Tools folder first.
+   Nothing arrives pre-cached - the first time you click one on a given PC,
+   the app opens that tool's official download page plus the Tools folder
+   side by side and tells you exactly what to save and where. Do that once
+   per client PC, and every future click on that same PC launches it
+   directly from then on.
 
 Troubleshooting: if double-clicking the .bat still does nothing, open a
 PowerShell window in this folder and run:
