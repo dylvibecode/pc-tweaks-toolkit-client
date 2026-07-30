@@ -163,10 +163,12 @@ official vendor site (never a third-party mirror):
   HWiNFO -> https://www.hwinfo.com/download/
             Download the portable ZIP, extract, save as: HWiNFO64.exe
 
-  OCCT, Heaven Benchmark, and MSI Afterburner (Stress Test tab) still get
-  cached here, but unlike the three above they aren't self-contained
-  standalone tools - Heaven and Afterburner are installers (run once per
-  client PC; Afterburner also installs a driver + background service).
+  OCCT, Heaven Benchmark, and MSI Afterburner (Stress Test tab) follow the
+  exact same manual download-and-place process as everything above. The
+  only difference: they aren't self-contained standalone exes, so launching
+  the cached copy runs a real installer step per client PC (Heaven and
+  Afterburner) rather than opening the tool directly - Afterburner's
+  installer additionally installs a driver + background service.
     OCCT             -> https://www.ocbase.com/download
                         Save as: OCCT.exe
     Heaven Benchmark -> https://benchmark.unigine.com/heaven
@@ -181,6 +183,15 @@ official vendor site (never a third-party mirror):
                         run the download once, extract it into a subfolder
                         here named exactly: DDU
                         (so the result is Tools\DDU\Display Driver Uninstaller.exe
+                        alongside its other extracted files, which it needs).
+
+  NVIDIA Profile Inspector (Graphics tab, "Apply/Reset NVIDIA Settings")
+                     -> https://github.com/Orbmu2k/nvidiaProfileInspector/releases
+                        Downloads as a zip - extract ALL of its contents
+                        (nvidiaProfileInspector.exe, Reference.xml, and the
+                        rest) into a subfolder here named exactly:
+                        ProfileInspector
+                        (so the result is Tools\ProfileInspector\nvidiaProfileInspector.exe
                         alongside its other extracted files, which it needs).
 
 Note: each portable tool writes its own .ini settings file next to itself
@@ -234,6 +245,49 @@ function Get-PrimaryGpuVendor {
     if ($primary.Name -match 'AMD|Radeon|ATI') { return 'AMD' }
     if ($primary.Name -match 'Intel') { return 'Intel' }
     return $null
+}
+
+function Invoke-LegacyNvidiaControlPanel {
+    # Store app, not a Tools\-cached exe - a different acquisition path than
+    # Invoke-ExternalTool's on purpose (winget/Microsoft Store, not a manual
+    # download-and-place). Never blocks the UI thread on the winget install
+    # itself (same class of risk as Start-Service/bulk-delete elsewhere in
+    # this app) - installs in its own visible window and asks the tech to
+    # click again once it finishes, matching the "click again" convention
+    # every not-yet-cached tool in this app already uses.
+    param([System.Windows.Forms.RichTextBox]$OutputBox)
+    $aumid = 'NVIDIACorp.NVIDIAControlPanel_56jybvy8sckqj!NVIDIACorp.NVIDIAControlPanel'
+    $pkg = Get-AppxPackage -Name 'NVIDIACorp.NVIDIAControlPanel' -ErrorAction SilentlyContinue
+    if ($pkg) {
+        Write-ToolOutput $OutputBox "Launching Legacy NVIDIA Control Panel..."
+        # Start-Process "shell:appsFolder\..." directly resolves via COM activation inside
+        # THIS (elevated) process, which Windows' AppModel security silently refuses for
+        # packaged/UWP apps - no exception, it just never opens. Routing through explorer.exe
+        # instead forwards the activation request to its own already-running, non-elevated
+        # shell instance, which Store apps are allowed to activate from.
+        Start-Process -FilePath 'explorer.exe' -ArgumentList "shell:appsFolder\$aumid"
+        return
+    }
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if ($winget) {
+        Write-ToolOutput $OutputBox "Legacy NVIDIA Control Panel isn't installed - installing via winget (Microsoft Store) in its own window..."
+        Start-Process -FilePath 'winget.exe' -ArgumentList 'install --id 9NF8H0H7WMLT --source msstore --accept-package-agreements --accept-source-agreements'
+        [System.Windows.Forms.MessageBox]::Show(
+            "Installing Legacy NVIDIA Control Panel via winget in a separate window - this can take a minute depending on the connection.`n`nOnce it finishes, click this button again (or re-run Apply/Reset NVIDIA Settings) to launch it.",
+            "Installing NVIDIA Control Panel",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+    } else {
+        Write-ToolOutput $OutputBox "winget isn't available on this PC - opening the Microsoft Store listing page instead."
+        Start-Process 'https://apps.microsoft.com/detail/9NF8H0H7WMLT'
+        [System.Windows.Forms.MessageBox]::Show(
+            "winget isn't available on this PC.`n`nThe Microsoft Store listing for Legacy NVIDIA Control Panel just opened - install it from there, then click this button again to launch it.",
+            "NVIDIA Control Panel Not Found",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+    }
 }
 
 # ---------- GUI ----------
@@ -2021,6 +2075,130 @@ $script:GraphicsBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType T
             }
         }
         Write-ToolOutput $outputBox "GPU power state reverted to default (dynamic switching)."
+    }))
+$script:GraphicsBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action `
+    -Title "Apply NVIDIA Settings" -Description "Applies a curated NVIDIA Base Profile via NVIDIA Profile Inspector: highest available refresh rate, Prefer Maximum Performance power mode, unlimited shader cache, threaded optimization on, Ultra Low Latency Mode, 1 max pre-rendered frame, Vertical Sync off, Fixed Refresh monitor technology. Heads-up: Vertical Sync off can cause screen tearing on monitors without G-Sync/FreeSync. Auto-launches the Legacy NVIDIA Control Panel afterward. NVIDIA-only, fully reversible with 'Reset NVIDIA Settings'." `
+    -RunAction {
+        Write-ToolOutput $outputBox (Get-NvidiaProfileInspectorText)
+        $vendor = Get-PrimaryGpuVendor
+        if ($vendor -ne 'NVIDIA') {
+            $reason = if ($vendor) { "$vendor GPU detected" } else { "No GPU vendor confidently detected" }
+            Write-ToolOutput $outputBox "$reason - NVIDIA Profile Inspector only affects NVIDIA's driver, skipping."
+            return
+        }
+        # SettingID/SettingValue pairs sourced directly from the user's own Profile Inspector
+        # export - not re-derived or copied from any third-party sample.
+        $nip = @'
+<?xml version="1.0" encoding="utf-16"?>
+<ArrayOfProfile>
+  <Profile>
+    <ProfileName>Base Profile</ProfileName>
+    <Executeables />
+    <Settings>
+      <ProfileSetting>
+        <SettingNameInfo>Preferred refresh rate</SettingNameInfo>
+        <SettingID>6600001</SettingID>
+        <SettingValue>1</SettingValue>
+        <ValueType>Dword</ValueType>
+      </ProfileSetting>
+      <ProfileSetting>
+        <SettingNameInfo>Power management mode</SettingNameInfo>
+        <SettingID>274197361</SettingID>
+        <SettingValue>1</SettingValue>
+        <ValueType>Dword</ValueType>
+      </ProfileSetting>
+      <ProfileSetting>
+        <SettingNameInfo>Shader disk cache maximum size</SettingNameInfo>
+        <SettingID>11306135</SettingID>
+        <SettingValue>4294967295</SettingValue>
+        <ValueType>Dword</ValueType>
+      </ProfileSetting>
+      <ProfileSetting>
+        <SettingNameInfo>Threaded optimization</SettingNameInfo>
+        <SettingID>549528094</SettingID>
+        <SettingValue>1</SettingValue>
+        <ValueType>Dword</ValueType>
+      </ProfileSetting>
+      <ProfileSetting>
+        <SettingNameInfo>FRL Low Latency</SettingNameInfo>
+        <SettingID>277041152</SettingID>
+        <SettingValue>1</SettingValue>
+        <ValueType>Dword</ValueType>
+      </ProfileSetting>
+      <ProfileSetting>
+        <SettingNameInfo>Maximum pre-rendered frames</SettingNameInfo>
+        <SettingID>8102046</SettingID>
+        <SettingValue>1</SettingValue>
+        <ValueType>Dword</ValueType>
+      </ProfileSetting>
+      <ProfileSetting>
+        <SettingNameInfo>Vertical Sync</SettingNameInfo>
+        <SettingID>11041231</SettingID>
+        <SettingValue>138504007</SettingValue>
+        <ValueType>Dword</ValueType>
+      </ProfileSetting>
+      <ProfileSetting>
+        <!-- Profile Inspector's internal SettingNameInfo for this ID is "GSYNC - Application
+             State" - a misleading label confirmed against the live UI, which calls it "Monitor
+             Technology". Not gated behind having G-Sync hardware; SettingValue=4 is "Fixed
+             Refresh Rate", the correct universal default for a client PC of unknown monitor. -->
+        <SettingNameInfo>Monitor Technology - Fixed Refresh</SettingNameInfo>
+        <SettingID>279476687</SettingID>
+        <SettingValue>4</SettingValue>
+        <ValueType>Dword</ValueType>
+      </ProfileSetting>
+    </Settings>
+  </Profile>
+</ArrayOfProfile>
+'@
+        $tempPath = Join-Path $env:TEMP 'PCTweaksToolkit_ApplyBase.nip'
+        [System.IO.File]::WriteAllText($tempPath, $nip, [System.Text.Encoding]::Unicode)
+        $applied = Invoke-ExternalTool -Name "NVIDIA Profile Inspector" -Candidates @('ProfileInspector\nvidiaProfileInspector.exe') `
+            -DownloadUrl 'https://github.com/Orbmu2k/nvidiaProfileInspector/releases' -ToolsDir $ToolsDir -OutputBox $outputBox `
+            -ArgumentList "-silentImport -silent `"$tempPath`"" -Wait `
+            -Note "Downloads as a zip - extract ALL of its contents (nvidiaProfileInspector.exe, Reference.xml, and the rest) into a subfolder here named exactly: ProfileInspector"
+        Remove-Item -Path $tempPath -ErrorAction SilentlyContinue
+        if ($applied) {
+            Write-ToolOutput $outputBox "NVIDIA Base Profile settings applied. Heads-up: Vertical Sync is now off, which can cause screen tearing on monitors without G-Sync/FreeSync."
+            Invoke-LegacyNvidiaControlPanel -OutputBox $outputBox
+        }
+    }))
+$script:GraphicsBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Action `
+    -Title "Reset NVIDIA Settings" -Description "Clears the NVIDIA Base Profile back to driver defaults via NVIDIA Profile Inspector - reverts 'Apply NVIDIA Settings' and any other Base Profile customization. Auto-launches the Legacy NVIDIA Control Panel afterward. NVIDIA-only." `
+    -RunAction {
+        Write-ToolOutput $outputBox (Get-NvidiaProfileInspectorText)
+        $vendor = Get-PrimaryGpuVendor
+        if ($vendor -ne 'NVIDIA') {
+            $reason = if ($vendor) { "$vendor GPU detected" } else { "No GPU vendor confidently detected" }
+            Write-ToolOutput $outputBox "$reason - NVIDIA Profile Inspector only affects NVIDIA's driver, skipping."
+            return
+        }
+        $nip = @'
+<?xml version="1.0" encoding="utf-16"?>
+<ArrayOfProfile>
+  <Profile>
+    <ProfileName>Base Profile</ProfileName>
+    <Executeables />
+    <Settings />
+  </Profile>
+</ArrayOfProfile>
+'@
+        $tempPath = Join-Path $env:TEMP 'PCTweaksToolkit_ResetBase.nip'
+        [System.IO.File]::WriteAllText($tempPath, $nip, [System.Text.Encoding]::Unicode)
+        $applied = Invoke-ExternalTool -Name "NVIDIA Profile Inspector" -Candidates @('ProfileInspector\nvidiaProfileInspector.exe') `
+            -DownloadUrl 'https://github.com/Orbmu2k/nvidiaProfileInspector/releases' -ToolsDir $ToolsDir -OutputBox $outputBox `
+            -ArgumentList "-silentImport -silent `"$tempPath`"" -Wait `
+            -Note "Downloads as a zip - extract ALL of its contents (nvidiaProfileInspector.exe, Reference.xml, and the rest) into a subfolder here named exactly: ProfileInspector"
+        Remove-Item -Path $tempPath -ErrorAction SilentlyContinue
+        if ($applied) {
+            Write-ToolOutput $outputBox "NVIDIA Base Profile settings reset to driver defaults."
+            Invoke-LegacyNvidiaControlPanel -OutputBox $outputBox
+        }
+    }))
+$script:GraphicsBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
+    -Title "Legacy NVIDIA Control Panel" -Description "Launches the classic NVIDIA Control Panel (via its Microsoft Store app). Installs it first via winget if it isn't already present - click again once the install finishes." `
+    -RunAction {
+        Invoke-LegacyNvidiaControlPanel -OutputBox $outputBox
     }))
 $script:GraphicsBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
     -Title "Resolution & Refresh Rate" -Description "Shows each display's current resolution/refresh rate and opens Settings." `

@@ -16,10 +16,10 @@ Windows will show a one-time "Windows protected your PC" SmartScreen warning on 
 
 - **PC Check** — storage, RAM, GPU, temps, BIOS version/settings checks.
 - **Stress Test** — CPU (OCCT) and GPU (Heaven + MSI Afterburner) stress testing.
-- **Graphics** — GPU driver cleanup (DDU), Safe Mode reboot helper, driver download links, max-performance GPU power state, display settings.
+- **Graphics** — GPU driver cleanup (DDU), Safe Mode reboot helper, driver download links, max-performance GPU power state, display settings, a curated NVIDIA settings preset (via NVIDIA Profile Inspector), and the Legacy NVIDIA Control Panel.
 - **Windows** — taskbar/Start customization, theme & accent color, context menu, debloat, gaming tweaks, and performance tuning (network, power plan, cleanup).
 
-A few buttons launch third-party diagnostic tools (CPU-Z, GPU-Z, HWiNFO, OCCT, Heaven, MSI Afterburner, DDU) that aren't bundled here — the app will point you to the official download page the first time you need one.
+A few buttons launch third-party diagnostic tools (CPU-Z, GPU-Z, HWiNFO, OCCT, Heaven, MSI Afterburner, DDU, NVIDIA Profile Inspector) that aren't bundled here — the app will point you to the official download page the first time you need one. The Legacy NVIDIA Control Panel is installed via `winget` from the Microsoft Store instead, the first time it's used.
 
 ## License
 

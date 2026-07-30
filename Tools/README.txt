@@ -14,10 +14,12 @@ official vendor site (never a third-party mirror):
   HWiNFO -> https://www.hwinfo.com/download/
             Download the portable ZIP, extract, save as: HWiNFO64.exe
 
-  OCCT, Heaven Benchmark, and MSI Afterburner (Stress Test tab) still get
-  cached here, but unlike the three above they aren't self-contained
-  standalone tools - Heaven and Afterburner are installers (run once per
-  client PC; Afterburner also installs a driver + background service).
+  OCCT, Heaven Benchmark, and MSI Afterburner (Stress Test tab) follow the
+  exact same manual download-and-place process as everything above. The
+  only difference: they aren't self-contained standalone exes, so launching
+  the cached copy runs a real installer step per client PC (Heaven and
+  Afterburner) rather than opening the tool directly - Afterburner's
+  installer additionally installs a driver + background service.
     OCCT             -> https://www.ocbase.com/download
                         Save as: OCCT.exe
     Heaven Benchmark -> https://benchmark.unigine.com/heaven
@@ -32,6 +34,15 @@ official vendor site (never a third-party mirror):
                         run the download once, extract it into a subfolder
                         here named exactly: DDU
                         (so the result is Tools\DDU\Display Driver Uninstaller.exe
+                        alongside its other extracted files, which it needs).
+
+  NVIDIA Profile Inspector (Graphics tab, "Apply/Reset NVIDIA Settings")
+                     -> https://github.com/Orbmu2k/nvidiaProfileInspector/releases
+                        Downloads as a zip - extract ALL of its contents
+                        (nvidiaProfileInspector.exe, Reference.xml, and the
+                        rest) into a subfolder here named exactly:
+                        ProfileInspector
+                        (so the result is Tools\ProfileInspector\nvidiaProfileInspector.exe
                         alongside its other extracted files, which it needs).
 
 Note: each portable tool writes its own .ini settings file next to itself

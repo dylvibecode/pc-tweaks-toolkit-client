@@ -310,6 +310,29 @@ function Get-HagsCheckText {
     return $lines -join "`n"
 }
 
+function Get-NvidiaProfileInspectorText {
+    $lines = @()
+    $lines += "=== NVIDIA Profile Inspector - Base Profile ==="
+    Get-CimInstance Win32_VideoController | Where-Object { $_.Name -notmatch 'Basic Render|Remote Display|Virtual' } | ForEach-Object {
+        $lines += ("  {0}  (driver {1})" -f $_.Name, $_.DriverVersion)
+    }
+    $lines += ""
+    $lines += "Applies to the driver's Base Profile (global defaults, not a per-game profile) via"
+    $lines += "NVIDIA Profile Inspector's silent import - no dialogs or GUI shown. NVIDIA-only."
+    $lines += ""
+    $lines += "'Apply NVIDIA Settings' sets: highest available refresh rate, Prefer Maximum"
+    $lines += "Performance power mode, unlimited shader cache, threaded optimization on, Ultra Low"
+    $lines += "Latency Mode, 1 max pre-rendered frame, Vertical Sync off, and Fixed Refresh monitor"
+    $lines += "technology."
+    $lines += ""
+    $lines += "'Reset NVIDIA Settings' clears the Base Profile back to driver defaults - not just"
+    $lines += "undoing the 8 settings above, but any other Base Profile customization too."
+    $lines += ""
+    $lines += "Both auto-launch the Legacy NVIDIA Control Panel afterward so the result is visible"
+    $lines += "immediately - installed via winget on first use if it isn't already present."
+    return $lines -join "`n"
+}
+
 function Get-TaskbarStartText {
     $lines = @()
     $lines += "=== Taskbar & Start Menu Cleanup ==="
@@ -768,4 +791,4 @@ function Get-GpuStressCheckText {
     return $lines -join "`n"
 }
 
-Export-ModuleMember -Function Get-SystemHeaderText, Get-StorageCheckText, Get-RamSummaryText, Get-GpuSummaryText, Get-DduCheckText, Get-DriverUpdateCheckText, Get-SafeModeCheckText, Get-TempsCheckText, Get-BiosCheckText, Get-BiosSettingsCheckText, Get-GpuP0StateText, Get-GpuP0State, Get-DisplaySettingsCheckText, Get-HagsCheckText, Get-TaskbarStartText, Get-TaskbarAlignmentText, Get-TaskbarAlignmentState, Get-ContextMenuText, Get-ContextMenuState, Get-ThemeText, Get-ThemeState, Get-AccentColorText, Get-RestartExplorerText, Get-WidgetsText, Get-WidgetsState, Get-CopilotText, Get-CopilotState, Get-MouseAccelText, Get-MouseAccelState, Get-GameModeText, Get-BloatwareText, Get-OneDriveText, Get-XboxReinstallText, Get-ProcessCountText, Get-ServicesText, Get-ServicesState, Get-GameBarText, Get-GameBarState, Get-SoundDevicesText, Get-NetworkBindingsText, Get-NetworkBindingsState, Get-PowerPlanText, Get-CleanupText, Get-DiskCleanupText, Get-StartupAppsText, Get-CpuStressCheckText, Get-GpuStressCheckText
+Export-ModuleMember -Function Get-SystemHeaderText, Get-StorageCheckText, Get-RamSummaryText, Get-GpuSummaryText, Get-DduCheckText, Get-DriverUpdateCheckText, Get-SafeModeCheckText, Get-TempsCheckText, Get-BiosCheckText, Get-BiosSettingsCheckText, Get-GpuP0StateText, Get-GpuP0State, Get-DisplaySettingsCheckText, Get-HagsCheckText, Get-NvidiaProfileInspectorText, Get-TaskbarStartText, Get-TaskbarAlignmentText, Get-TaskbarAlignmentState, Get-ContextMenuText, Get-ContextMenuState, Get-ThemeText, Get-ThemeState, Get-AccentColorText, Get-RestartExplorerText, Get-WidgetsText, Get-WidgetsState, Get-CopilotText, Get-CopilotState, Get-MouseAccelText, Get-MouseAccelState, Get-GameModeText, Get-BloatwareText, Get-OneDriveText, Get-XboxReinstallText, Get-ProcessCountText, Get-ServicesText, Get-ServicesState, Get-GameBarText, Get-GameBarState, Get-SoundDevicesText, Get-NetworkBindingsText, Get-NetworkBindingsState, Get-PowerPlanText, Get-CleanupText, Get-DiskCleanupText, Get-StartupAppsText, Get-CpuStressCheckText, Get-GpuStressCheckText

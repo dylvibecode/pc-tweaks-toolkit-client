@@ -87,7 +87,9 @@ function Invoke-ExternalTool {
         [string]$ToolsDir,
         [System.Windows.Forms.RichTextBox]$OutputBox,
         [string]$Note = "",
-        [string]$InstalledNamePattern = ""
+        [string]$InstalledNamePattern = "",
+        [string]$ArgumentList = "",
+        [switch]$Wait
     )
     $found = $null
     foreach ($c in $Candidates) {
@@ -100,10 +102,12 @@ function Invoke-ExternalTool {
     }
     if ($found) {
         Write-ToolOutput $OutputBox "Launching $Name from Tools folder ($found)..."
-        Start-Process -FilePath $found
+        if ($ArgumentList) { Start-Process -FilePath $found -ArgumentList $ArgumentList -Wait:$Wait } else { Start-Process -FilePath $found }
+        return $true
     } elseif ($installed) {
         Write-ToolOutput $OutputBox "$Name is already installed on this PC - launching it directly ($installed)..."
-        Start-Process -FilePath $installed
+        if ($ArgumentList) { Start-Process -FilePath $installed -ArgumentList $ArgumentList -Wait:$Wait } else { Start-Process -FilePath $installed }
+        return $true
     } else {
         Write-ToolOutput $OutputBox "$Name not found in: $ToolsDir"
         Write-ToolOutput $OutputBox "Opening the official $Name download page and the Tools folder..."
@@ -116,6 +120,7 @@ function Invoke-ExternalTool {
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
         ) | Out-Null
+        return $false
     }
 }
 
