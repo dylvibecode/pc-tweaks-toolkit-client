@@ -79,6 +79,12 @@ function Find-InstalledTool {
     return $null
 }
 
+function Test-CompanionFilePresent {
+    param([string]$ExePath, [string]$RequiredCompanionFile)
+    if (-not $RequiredCompanionFile) { return $true }
+    return (Test-Path (Join-Path (Split-Path $ExePath -Parent) $RequiredCompanionFile))
+}
+
 function Invoke-ExternalTool {
     param(
         [string]$Name,
@@ -89,16 +95,27 @@ function Invoke-ExternalTool {
         [string]$Note = "",
         [string]$InstalledNamePattern = "",
         [string]$ArgumentList = "",
-        [switch]$Wait
+        [switch]$Wait,
+        # A file whose presence (relative to the resolved exe's own folder) proves the
+        # install is actually complete, not just that the exe itself exists - added after
+        # a real client-PC bug: a broken/partial Heaven Benchmark leftover (no bin\unigine.cfg)
+        # still had a real registry entry and a real exe, so it kept getting "found" and
+        # launched into a fatal error instead of being treated as not-installed.
+        [string]$RequiredCompanionFile = ""
     )
     $found = $null
     foreach ($c in $Candidates) {
         $p = Join-Path $ToolsDir $c
-        if (Test-Path $p) { $found = $p; break }
+        if ((Test-Path $p) -and (Test-CompanionFilePresent $p $RequiredCompanionFile)) { $found = $p; break }
     }
     $installed = $null
     if (-not $found -and $InstalledNamePattern) {
-        $installed = Find-InstalledTool -NamePattern $InstalledNamePattern -ExeNames $Candidates
+        $candidate = Find-InstalledTool -NamePattern $InstalledNamePattern -ExeNames $Candidates
+        if ($candidate -and (Test-CompanionFilePresent $candidate $RequiredCompanionFile)) {
+            $installed = $candidate
+        } elseif ($candidate) {
+            Write-ToolOutput $OutputBox "Found a $Name installation, but it looks incomplete/broken (missing $RequiredCompanionFile) - treating it as not installed."
+        }
     }
     if ($found) {
         Write-ToolOutput $OutputBox "Launching $Name from Tools folder ($found)..."

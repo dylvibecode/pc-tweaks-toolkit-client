@@ -1499,7 +1499,7 @@ $script:StressBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Chec
         Write-ToolOutput $outputBox (Get-GpuStressCheckText)
         Invoke-ExternalTool -Name "Heaven Benchmark" -Candidates @('Heaven-Setup.exe', 'Heaven.exe', 'Heaven_x64.exe') `
             -DownloadUrl 'https://benchmark.unigine.com/heaven' -ToolsDir $ToolsDir -OutputBox $outputBox `
-            -InstalledNamePattern '*Heaven*' `
+            -InstalledNamePattern '*Heaven*' -RequiredCompanionFile 'bin\unigine.cfg' `
             -Note "Heaven is normally a full installer, not portable - run it once and launch it normally afterward. If it downloads with a version number in the filename (e.g. Unigine_Heaven-4.0.exe), rename it to Heaven-Setup.exe so future re-downloads still get found."
     }))
 $script:StressBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
