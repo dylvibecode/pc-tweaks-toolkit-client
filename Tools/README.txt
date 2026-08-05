@@ -41,8 +41,10 @@ official vendor site (never a third-party mirror):
                         Downloads as a zip - extract ALL of its contents
                         (nvidiaProfileInspector.exe, Reference.xml, and the
                         rest) into a subfolder here named exactly:
-                        ProfileInspector
-                        (so the result is Tools\ProfileInspector\nvidiaProfileInspector.exe
+                        nvidiaProfileInspector
+                        (the zip already extracts to this folder name by
+                        default - no renaming needed. Result should be
+                        Tools\nvidiaProfileInspector\nvidiaProfileInspector.exe
                         alongside its other extracted files, which it needs).
 
 Note: each portable tool writes its own .ini settings file next to itself

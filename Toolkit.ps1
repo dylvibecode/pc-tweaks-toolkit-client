@@ -215,8 +215,10 @@ official vendor site (never a third-party mirror):
                         Downloads as a zip - extract ALL of its contents
                         (nvidiaProfileInspector.exe, Reference.xml, and the
                         rest) into a subfolder here named exactly:
-                        ProfileInspector
-                        (so the result is Tools\ProfileInspector\nvidiaProfileInspector.exe
+                        nvidiaProfileInspector
+                        (the zip already extracts to this folder name by
+                        default - no renaming needed. Result should be
+                        Tools\nvidiaProfileInspector\nvidiaProfileInspector.exe
                         alongside its other extracted files, which it needs).
 
 Note: each portable tool writes its own .ini settings file next to itself
@@ -2306,10 +2308,10 @@ $script:GraphicsBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType A
 '@
         $tempPath = Join-Path $env:TEMP 'PCTweaksToolkit_ApplyBase.nip'
         [System.IO.File]::WriteAllText($tempPath, $nip, [System.Text.Encoding]::Unicode)
-        $applied = Invoke-ExternalTool -Name "NVIDIA Profile Inspector" -Candidates @('ProfileInspector\nvidiaProfileInspector.exe') `
+        $applied = Invoke-ExternalTool -Name "NVIDIA Profile Inspector" -Candidates @('nvidiaProfileInspector\nvidiaProfileInspector.exe') `
             -DownloadUrl 'https://github.com/Orbmu2k/nvidiaProfileInspector/releases' -ToolsDir $ToolsDir -OutputBox $outputBox `
             -ArgumentList "-silentImport -silent `"$tempPath`"" -Wait `
-            -Note "Downloads as a zip - extract ALL of its contents (nvidiaProfileInspector.exe, Reference.xml, and the rest) into a subfolder here named exactly: ProfileInspector"
+            -Note "Downloads as a zip - extract ALL of its contents (nvidiaProfileInspector.exe, Reference.xml, and the rest) into a subfolder here named exactly: nvidiaProfileInspector (the zip already extracts to this name by default)"
         Remove-Item -Path $tempPath -ErrorAction SilentlyContinue
         if ($applied) {
             Write-ToolOutput $outputBox "NVIDIA Base Profile settings applied. Heads-up: Vertical Sync is now off, which can cause screen tearing on monitors without G-Sync/FreeSync."
@@ -2338,10 +2340,10 @@ $script:GraphicsBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType A
 '@
         $tempPath = Join-Path $env:TEMP 'PCTweaksToolkit_ResetBase.nip'
         [System.IO.File]::WriteAllText($tempPath, $nip, [System.Text.Encoding]::Unicode)
-        $applied = Invoke-ExternalTool -Name "NVIDIA Profile Inspector" -Candidates @('ProfileInspector\nvidiaProfileInspector.exe') `
+        $applied = Invoke-ExternalTool -Name "NVIDIA Profile Inspector" -Candidates @('nvidiaProfileInspector\nvidiaProfileInspector.exe') `
             -DownloadUrl 'https://github.com/Orbmu2k/nvidiaProfileInspector/releases' -ToolsDir $ToolsDir -OutputBox $outputBox `
             -ArgumentList "-silentImport -silent `"$tempPath`"" -Wait `
-            -Note "Downloads as a zip - extract ALL of its contents (nvidiaProfileInspector.exe, Reference.xml, and the rest) into a subfolder here named exactly: ProfileInspector"
+            -Note "Downloads as a zip - extract ALL of its contents (nvidiaProfileInspector.exe, Reference.xml, and the rest) into a subfolder here named exactly: nvidiaProfileInspector (the zip already extracts to this name by default)"
         Remove-Item -Path $tempPath -ErrorAction SilentlyContinue
         if ($applied) {
             Write-ToolOutput $outputBox "NVIDIA Base Profile settings reset to driver defaults."
