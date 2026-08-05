@@ -120,6 +120,31 @@ public class MouseHelper {
 $script:SPI_SETMOUSE = 0x0004
 $script:SPIF_SENDCHANGE = 0x2
 
+# Reads the display's current default ICC profile for the Tarkov LUT toggle. GetICMProfileW is
+# the only reliable read path found (confirmed live against Windows' own Color Management
+# dialog) - WcsGetDefaultColorProfile and AssociateColorProfileWithDevice were both tested and
+# ruled out for plain SDR displays (see PLAN.md for the full investigation). Installing the
+# profile itself is a plain file copy, not InstallColorProfileW (that API rejects this specific
+# file with ERROR_INVALID_PARAMETER, confirmed live both elevated and not - see the OnAction
+# below). The actual default-profile write is a direct edit to the ICM ProfileAssociations
+# registry list, done inline in the tile's OnAction/OffAction further down.
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class IcmHelper {
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr CreateDCW(string pwszDriver, string pwszDevice, string pszPort, IntPtr pdm);
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool DeleteDC(IntPtr hdc);
+    [DllImport("gdi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool GetICMProfileW(IntPtr hdc, ref uint pBufSize, StringBuilder pszFilename);
+}
+"@
+$script:MonitorProfileAssociationsKey = 'HKCU:\Software\Microsoft\Windows NT\CurrentVersion\ICM\ProfileAssociations\Display\{4d36e96e-e325-11ce-bfc1-08002be10318}'
+$script:TarkovLutFileName = 'Filter EFT brighter.icm'
+$script:ColorProfileDir = Join-Path $env:WINDIR 'System32\spool\drivers\color'
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
@@ -288,6 +313,55 @@ function Invoke-LegacyNvidiaControlPanel {
             [System.Windows.Forms.MessageBoxIcon]::Information
         ) | Out-Null
     }
+}
+
+# Tarkov LUT toggle helpers. GetICMProfileW (via a real HDC for the display) is the only
+# reliable way found to read a display's current default ICC profile - confirmed live against
+# Windows' own Color Management dialog. The write path is a direct edit to the ICM
+# ProfileAssociations registry list (the exact list Color Management itself shows/edits under
+# "Profiles associated with this device") - NOT WcsAssociateColorProfileWithDevice (fails with
+# ERROR_NOT_SUPPORTED on real hardware, both elevated and not) and NOT SetICMProfileW (the write
+# call reports success but doesn't persist past its own DC). The LAST entry in that REG_MULTI_SZ
+# list is the default - confirmed by matching list order against what the GUI displays as
+# "(default)". Whether a plain registry write alone causes a live visual change is NOT reliable
+# (confirmed by direct testing: GetICMProfileW reflects the change immediately, but the screen
+# does not always follow) - SetDeviceGammaRamp could force it, but Microsoft's own docs strongly
+# discourage that API (silent-failure heuristics, gets reset on any display event, undefined in
+# HDR), so it's deliberately not used here. See PLAN.md for the full investigation.
+function Get-TarkovLutAdapterName {
+    return [System.Windows.Forms.Screen]::PrimaryScreen.DeviceName
+}
+
+function Get-TarkovLutCurrentProfileLeaf {
+    $hdc = [IcmHelper]::CreateDCW("DISPLAY", (Get-TarkovLutAdapterName), $null, [IntPtr]::Zero)
+    if ($hdc -eq [IntPtr]::Zero) { return $null }
+    [uint32]$size = 512
+    $buf = New-Object System.Text.StringBuilder(512)
+    $ok = [IcmHelper]::GetICMProfileW($hdc, [ref]$size, $buf)
+    [IcmHelper]::DeleteDC($hdc) | Out-Null
+    if (-not $ok) { return $null }
+    return Split-Path $buf.ToString() -Leaf
+}
+
+function Get-TarkovLutState {
+    return ((Get-TarkovLutCurrentProfileLeaf) -ieq $script:TarkovLutFileName)
+}
+
+function Find-TarkovLutInstanceKey {
+    # Not hardcoded to any one numbered subkey (that number is specific to each PC's own device
+    # enumeration history) - finds the right one generically by matching which key's profile list
+    # currently ENDS with the live current-default filename, confirmed working across two
+    # differently-numbered instances (0002 vs 0005) on the dev machine.
+    param([string]$CurrentLeaf)
+    if (-not $CurrentLeaf) { return $null }
+    $match = $null
+    Get-ChildItem $script:MonitorProfileAssociationsKey -ErrorAction SilentlyContinue | ForEach-Object {
+        $val = (Get-ItemProperty -Path $_.PSPath -Name 'ICMProfile' -ErrorAction SilentlyContinue).ICMProfile
+        if ($val -and $val[-1] -ieq $CurrentLeaf -and -not $match) {
+            $match = [PSCustomObject]@{ Path = $_.PSPath; Value = $val }
+        }
+    }
+    return $match
 }
 
 # ---------- GUI ----------
@@ -1922,6 +1996,85 @@ $script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -Co
             }
         }
         Write-ToolOutput $outputBox "Network bindings restored."
+    }))
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle `
+    -Title "Prioritize Foreground Apps" -Description "Reduces the CPU Windows always reserves for background/multimedia tasks (SystemResponsiveness 20 -> 10), leaving more headroom for whatever's actively in the foreground. Modest but real effect, safe and reversible." `
+    -GetState { Get-SystemResponsivenessState } `
+    -OnAction {
+        Write-ToolOutput $outputBox (Get-SystemResponsivenessText)
+        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' -Name 'SystemResponsiveness' -Value 10 -Type DWord
+        Write-ToolOutput $outputBox "SystemResponsiveness set to 10."
+    } `
+    -OffAction {
+        Write-ToolOutput $outputBox (Get-SystemResponsivenessText)
+        Remove-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' -Name 'SystemResponsiveness' -ErrorAction SilentlyContinue
+        Write-ToolOutput $outputBox "SystemResponsiveness key removed - reverted to Windows' default (20)."
+    }))
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
+    -Title "Core Isolation / Memory Integrity" -Description "Opens Windows Security's Device Security page and explains the Memory Integrity performance-vs-security tradeoff. This app never toggles it - the tech/client decides in the actual Windows UI." `
+    -RunAction {
+        Write-ToolOutput $outputBox (Get-CoreIsolationText)
+        Start-Process 'windowsdefender://devicesecurity'
+    }))
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Check -ControlType Check `
+    -Title "Visual Effects" -Description "Opens Windows' Performance Options dialog. Recommends 'Adjust for best performance' as a starting point, then lists 5 specific effects worth re-checking afterward." `
+    -RunAction {
+        Write-ToolOutput $outputBox (Get-VisualEffectsText)
+        Start-Process 'SystemPropertiesPerformance.exe'
+    }))
+$script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Adjust -ControlType Toggle `
+    -Title "Apply Tarkov LUT" -Description "Installs a bundled color profile and sets it as the default for this display - a known Escape from Tarkov community technique for brightening its very dark scenes. Opens Color Management afterward in case a manual 'Set as Default Profile' click is needed to finish applying it live." `
+    -GetState { Get-TarkovLutState } `
+    -OnAction {
+        Write-ToolOutput $outputBox (Get-TarkovLutText)
+        $lutPath = Join-Path $AssetsDir $script:TarkovLutFileName
+        if (-not (Test-Path $lutPath)) {
+            Write-ToolOutput $outputBox "ERROR: bundled LUT file not found at $lutPath"
+            return
+        }
+        # InstallColorProfileW rejects this file with ERROR_INVALID_PARAMETER (confirmed live,
+        # both elevated and not) - its ICC validation is apparently stricter than what a plain
+        # copy needs. A direct file copy into the color directory works instead (same result
+        # Color Management's own "Add..." dialog produces - confirmed by diffing this file
+        # against the user's own manually-added copy, byte-identical, both read back fine).
+        try {
+            Copy-Item -Path $lutPath -Destination (Join-Path $script:ColorProfileDir $script:TarkovLutFileName) -Force -ErrorAction Stop
+        } catch {
+            Write-ToolOutput $outputBox "ERROR: could not copy the profile into the color directory - $_"
+            return
+        }
+        Write-ToolOutput $outputBox "Profile installed to the Windows color directory."
+        $currentLeaf = Get-TarkovLutCurrentProfileLeaf
+        $key = Find-TarkovLutInstanceKey -CurrentLeaf $currentLeaf
+        if (-not $key) {
+            Write-ToolOutput $outputBox "Couldn't find this display's profile list in the registry - opening Color Management so you can add it manually (Add... -> select '$($script:TarkovLutFileName)' -> Set as Default Profile)."
+            Start-Process 'colorcpl.exe'
+            return
+        }
+        $newList = @($key.Value | Where-Object { $_ -ine $script:TarkovLutFileName }) + $script:TarkovLutFileName
+        Set-ItemProperty -Path $key.Path -Name 'ICMProfile' -Value $newList -Type MultiString
+        Write-ToolOutput $outputBox "Registry association updated - '$($script:TarkovLutFileName)' is now the default profile for this display."
+        Write-ToolOutput $outputBox "If your screen doesn't look brighter yet, Color Management just opened - click it in the list, then 'Set as Default Profile' once to finish applying it live."
+        Start-Process 'colorcpl.exe'
+    } `
+    -OffAction {
+        Write-ToolOutput $outputBox (Get-TarkovLutText)
+        $currentLeaf = Get-TarkovLutCurrentProfileLeaf
+        $key = Find-TarkovLutInstanceKey -CurrentLeaf $currentLeaf
+        if (-not $key) {
+            Write-ToolOutput $outputBox "Couldn't find this display's profile list in the registry - opening Color Management so you can pick a different default manually."
+            Start-Process 'colorcpl.exe'
+            return
+        }
+        $trimmedList = @($key.Value | Where-Object { $_ -ine $script:TarkovLutFileName })
+        if ($trimmedList.Count -eq 0) {
+            $trimmedList = @('sRGB Color Space Profile.icm')
+            Write-ToolOutput $outputBox "No other profile was associated with this display - falling back to Windows' stock sRGB profile."
+        }
+        Set-ItemProperty -Path $key.Path -Name 'ICMProfile' -Value $trimmedList -Type MultiString
+        Write-ToolOutput $outputBox "Registry association reverted - default is now '$($trimmedList[-1])'."
+        Write-ToolOutput $outputBox "If your screen still looks like the LUT, Color Management just opened - click '$($trimmedList[-1])' in the list, then 'Set as Default Profile' once to finish reverting it live."
+        Start-Process 'colorcpl.exe'
     }))
 $script:CurrentSectionInnerBoard.Controls.Add((New-SettingsTile -Tier Review -ControlType Action `
     -Title "Set Ultimate Power Plan" -Description "Activates Windows' hidden max-performance plan and permanently deletes every other power plan, including any custom ones." `

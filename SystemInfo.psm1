@@ -675,6 +675,81 @@ function Get-NetworkBindingsState {
     return ($binding -and -not $binding.Enabled)
 }
 
+function Get-SystemResponsivenessText {
+    $lines = @()
+    $lines += "=== Prioritize Foreground Apps ==="
+    $current = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' -Name 'SystemResponsiveness' -ErrorAction SilentlyContinue).SystemResponsiveness
+    $lines += "  Current SystemResponsiveness: " + $(if ($null -ne $current) { $current } else { "20 (default, key not set)" })
+    $lines += ""
+    $lines += "Windows' Multimedia Class Scheduler Service always reserves a slice of CPU time for"
+    $lines += "background/multimedia tasks, even while a game or other app is active in the"
+    $lines += "foreground - SystemResponsiveness controls how much (default 20%)."
+    $lines += ""
+    $lines += "Setting it to 10 halves that reservation, leaving more CPU headroom for whatever's"
+    $lines += "actually in the foreground. A real but modest effect, not a dramatic FPS change -"
+    $lines += "safe and fully reversible. Note: values below 10 get silently clamped back up to the"
+    $lines += "default of 20 by Windows, so 10 is the lowest value that actually takes effect."
+    return $lines -join "`n"
+}
+
+function Get-SystemResponsivenessState {
+    $value = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile' -Name 'SystemResponsiveness' -ErrorAction SilentlyContinue).SystemResponsiveness
+    return ($value -eq 10)
+}
+
+function Get-CoreIsolationText {
+    $lines = @()
+    $lines += "=== Core Isolation / Memory Integrity ==="
+    $lines += "Memory Integrity (Hypervisor-protected Code Integrity / HVCI) runs core Windows"
+    $lines += "processes inside a hardware-isolated virtual environment, making it much harder for"
+    $lines += "malware to hijack the system using vulnerable or malicious low-level drivers."
+    $lines += ""
+    $lines += "The real tradeoff: disabling it can measurably improve gaming performance on some"
+    $lines += "systems (fewer virtualization-based CPU overhead costs), but it genuinely reduces"
+    $lines += "this specific protection - a real security decision, not a pure performance freebie."
+    $lines += ""
+    $lines += "This app deliberately does NOT toggle this setting itself - opening Windows Security's"
+    $lines += "own Device Security page instead, so the tech/client makes this call themselves in the"
+    $lines += "actual Windows UI (also requires a reboot to take effect either direction, same as"
+    $lines += "Secure Boot-adjacent settings)."
+    return $lines -join "`n"
+}
+
+function Get-VisualEffectsText {
+    $lines = @()
+    $lines += "=== Visual Effects ==="
+    $lines += "Opening Windows' own Performance Options dialog (Visual Effects tab)."
+    $lines += ""
+    $lines += "Recommended starting point: pick 'Adjust for best performance' to turn everything"
+    $lines += "off, then manually re-check these 5 - worth keeping even on a performance-focused"
+    $lines += "setup, since they cost very little but matter for daily usability:"
+    $lines += "  - Animate controls and elements inside windows"
+    $lines += "  - Show thumbnails instead of icons"
+    $lines += "  - Smooth edges of screen fonts"
+    $lines += "  - Show translucent selection rectangle"
+    $lines += "  - Show window contents while dragging"
+    return $lines -join "`n"
+}
+
+function Get-TarkovLutText {
+    $lines = @()
+    $lines += "=== Apply Tarkov LUT ==="
+    $lines += "Installs a bundled ICC/ICM color profile ('Filter EFT brighter.icm') and sets it as"
+    $lines += "the default color profile for the primary display - a known, widely-used technique"
+    $lines += "in the Escape from Tarkov community for brightening the game's very dark scenes."
+    $lines += ""
+    $lines += "This edits the same 'profiles associated with this device' list Windows' own Color"
+    $lines += "Management dialog shows and edits (the last entry in that list is the default) -"
+    $lines += "it does not touch gamma/brightness hardware settings directly."
+    $lines += ""
+    $lines += "Whether this applies live immediately varies by PC - if the screen doesn't look"
+    $lines += "brighter right away, Color Management just opened: click the profile in the list,"
+    $lines += "then 'Set as Default Profile' once to finish applying it. Turning this off restores"
+    $lines += "whichever profile was previously the default (or Windows' stock sRGB profile if"
+    $lines += "none was set)."
+    return $lines -join "`n"
+}
+
 function Get-PowerPlanText {
     $lines = @()
     $lines += "=== Ultimate Performance Power Plan ==="
@@ -791,4 +866,4 @@ function Get-GpuStressCheckText {
     return $lines -join "`n"
 }
 
-Export-ModuleMember -Function Get-SystemHeaderText, Get-StorageCheckText, Get-RamSummaryText, Get-GpuSummaryText, Get-DduCheckText, Get-DriverUpdateCheckText, Get-SafeModeCheckText, Get-TempsCheckText, Get-BiosCheckText, Get-BiosSettingsCheckText, Get-GpuP0StateText, Get-GpuP0State, Get-DisplaySettingsCheckText, Get-HagsCheckText, Get-NvidiaProfileInspectorText, Get-TaskbarStartText, Get-TaskbarAlignmentText, Get-TaskbarAlignmentState, Get-ContextMenuText, Get-ContextMenuState, Get-ThemeText, Get-ThemeState, Get-AccentColorText, Get-RestartExplorerText, Get-WidgetsText, Get-WidgetsState, Get-CopilotText, Get-CopilotState, Get-MouseAccelText, Get-MouseAccelState, Get-GameModeText, Get-BloatwareText, Get-OneDriveText, Get-XboxReinstallText, Get-ProcessCountText, Get-ServicesText, Get-ServicesState, Get-GameBarText, Get-GameBarState, Get-SoundDevicesText, Get-NetworkBindingsText, Get-NetworkBindingsState, Get-PowerPlanText, Get-CleanupText, Get-DiskCleanupText, Get-StartupAppsText, Get-CpuStressCheckText, Get-GpuStressCheckText
+Export-ModuleMember -Function Get-SystemHeaderText, Get-StorageCheckText, Get-RamSummaryText, Get-GpuSummaryText, Get-DduCheckText, Get-DriverUpdateCheckText, Get-SafeModeCheckText, Get-TempsCheckText, Get-BiosCheckText, Get-BiosSettingsCheckText, Get-GpuP0StateText, Get-GpuP0State, Get-DisplaySettingsCheckText, Get-HagsCheckText, Get-NvidiaProfileInspectorText, Get-TaskbarStartText, Get-TaskbarAlignmentText, Get-TaskbarAlignmentState, Get-ContextMenuText, Get-ContextMenuState, Get-ThemeText, Get-ThemeState, Get-AccentColorText, Get-RestartExplorerText, Get-WidgetsText, Get-WidgetsState, Get-CopilotText, Get-CopilotState, Get-MouseAccelText, Get-MouseAccelState, Get-GameModeText, Get-BloatwareText, Get-OneDriveText, Get-XboxReinstallText, Get-ProcessCountText, Get-ServicesText, Get-ServicesState, Get-GameBarText, Get-GameBarState, Get-SoundDevicesText, Get-NetworkBindingsText, Get-NetworkBindingsState, Get-SystemResponsivenessText, Get-SystemResponsivenessState, Get-CoreIsolationText, Get-VisualEffectsText, Get-TarkovLutText, Get-PowerPlanText, Get-CleanupText, Get-DiskCleanupText, Get-StartupAppsText, Get-CpuStressCheckText, Get-GpuStressCheckText

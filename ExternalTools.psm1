@@ -102,11 +102,13 @@ function Invoke-ExternalTool {
     }
     if ($found) {
         Write-ToolOutput $OutputBox "Launching $Name from Tools folder ($found)..."
-        if ($ArgumentList) { Start-Process -FilePath $found -ArgumentList $ArgumentList -Wait:$Wait } else { Start-Process -FilePath $found }
+        $foundDir = Split-Path $found -Parent
+        if ($ArgumentList) { Start-Process -FilePath $found -ArgumentList $ArgumentList -WorkingDirectory $foundDir -Wait:$Wait } else { Start-Process -FilePath $found -WorkingDirectory $foundDir }
         return $true
     } elseif ($installed) {
         Write-ToolOutput $OutputBox "$Name is already installed on this PC - launching it directly ($installed)..."
-        if ($ArgumentList) { Start-Process -FilePath $installed -ArgumentList $ArgumentList -Wait:$Wait } else { Start-Process -FilePath $installed }
+        $installedDir = Split-Path $installed -Parent
+        if ($ArgumentList) { Start-Process -FilePath $installed -ArgumentList $ArgumentList -WorkingDirectory $installedDir -Wait:$Wait } else { Start-Process -FilePath $installed -WorkingDirectory $installedDir }
         return $true
     } else {
         Write-ToolOutput $OutputBox "$Name not found in: $ToolsDir"
